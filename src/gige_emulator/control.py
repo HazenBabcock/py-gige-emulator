@@ -3,7 +3,7 @@
 #
 # Binding to ('', 3956) covers unicast, 255.255.255.255 and the subnet
 # broadcast in a single socket. Aravis opens three sockets for this because
-# GLib makes it bind to specific addresses; there is no need to copy that.
+# GLib binds to specific addresses; the stdlib has no such constraint.
 #
 # Every reply goes back to the (address, port) the datagram came from. The
 # client's control socket is on an ephemeral port, so replying to a fixed

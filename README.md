@@ -1,9 +1,8 @@
 ### py-gige-emulator ###
 
 A pure Python GigE Vision camera emulator. It speaks GVCP and GVSP directly over
-UDP, so any GigE Vision client on the network — `arv-viewer`, micro-manager,
-anything built on [Aravis](https://github.com/AravisProject/aravis) — sees a real
-camera. No compiler, no libaravis, no C.
+UDP, so any GigE Vision client on the network — `arv-viewer` and anything built
+on [Aravis](https://github.com/AravisProject/aravis) — sees a real camera.
 
 Wire in a physical camera by subclassing `EmulatedCamera` and implementing three
 hooks.
