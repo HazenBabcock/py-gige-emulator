@@ -234,6 +234,56 @@ def test_category_namespace_follows_where_the_name_came_from():
     assert spaces["FRETControl"] == "Custom"
 
 
+def test_feature_namespace_follows_where_the_name_came_from():
+    """
+    Checked against a vendor-authored GenICam XML: feature nodes and enum
+    entries carry Standard when the convention defines the name, and the
+    register behind each feature is named here so it stays Custom.
+    """
+    camera = DummyCamera()
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy", "vendor")
+    root = ElementTree.fromstring(xml)
+    tag = root.tag[:root.tag.index("}") + 1]
+
+    spaces = {}
+    for node in root.iter():
+        if node.get("Name") and node.get("NameSpace"):
+            spaces[(node.tag[len(tag):], node.get("Name"))] = node.get("NameSpace")
+
+    assert spaces[("Integer", "Width")] == "Standard"
+    assert spaces[("Enumeration", "PixelFormat")] == "Standard"
+    assert spaces[("EnumEntry", "Mono8")] == "Standard"
+    assert spaces[("Command", "AcquisitionStart")] == "Standard"
+    assert spaces[("Float", "ExposureTime")] == "Standard"
+    # The register is this generator's own name, not the convention's.
+    assert spaces[("IntReg", "WidthReg")] == "Custom"
+
+
+def test_gainraw_is_not_claimed_as_a_standard_name():
+    """
+    The convention's gain feature is `Gain`, a float in dB with a
+    GainSelector. GainRaw is the GenICam 1.x integer form, kept because it is
+    what the examples already use -- but it is this device's own name, and
+    declaring it Standard would assert units it does not have.
+    """
+    camera = DummyCamera()
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy", "vendor")
+    root = ElementTree.fromstring(xml)
+    tag = root.tag[:root.tag.index("}") + 1]
+    node = [e for e in root.iter(tag + "Integer")
+            if e.get("Name") == "GainRaw"][0]
+    assert node.get("NameSpace") == "Custom"
+
+
+def test_payload_size_is_a_transport_layer_feature():
+    """
+    It follows from the geometry but it counts bytes on the stream channel,
+    which is where a vendor XML files it too.
+    """
+    features = DummyCamera().feature_set.by_name
+    assert features["PayloadSize"].category == "TransportLayerControl"
+
+
 def test_exposure_and_gain_land_in_the_two_categories_people_confuse():
     """
     Pinning the case the docstring calls out: they are tuned together and

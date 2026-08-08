@@ -36,6 +36,42 @@ SFNC_CATEGORIES = frozenset((
 ))
 
 
+#: Feature names defined by the naming convention, which are emitted with
+#: NameSpace="Standard". Declaring a name standard asserts the convention's
+#: meaning and units for it, so a name only belongs here once that has been
+#: checked -- this list is short on purpose and grows deliberately.
+#:
+#: `GainRaw` is deliberately absent. It is the GenICam 1.x integer form; the
+#: convention's gain feature is `Gain`, a float in dB paired with a
+#: `GainSelector`. The old name is kept because it is what the examples and
+#: anyone's settings dict already use, but it is this device's own name now.
+SFNC_FEATURES = frozenset((
+    "Width", "Height", "SensorWidth", "SensorHeight", "PixelFormat",
+    "OffsetX", "OffsetY", "BinningHorizontal", "BinningVertical",
+    "DecimationHorizontal", "DecimationVertical", "ReverseX", "ReverseY",
+    "TestPattern", "PayloadSize",
+    "AcquisitionMode", "AcquisitionStart", "AcquisitionStop",
+    "AcquisitionFrameRate", "ExposureTime", "ExposureAuto", "ExposureMode",
+    "TriggerMode", "TriggerSource", "TriggerSoftware", "TriggerSelector",
+    "Gain", "GainAuto", "GainSelector", "BlackLevel", "Gamma",
+    "BalanceRatio", "BalanceRatioSelector",
+    "DeviceVendorName", "DeviceModelName", "DeviceVersion",
+    "DeviceSerialNumber", "DeviceUserID", "DeviceReset", "DeviceTemperature",
+))
+
+
+#: Enumeration *entry* names the convention defines. A vendor XML marks these
+#: Standard alongside the enumeration itself, and they are a separate
+#: vocabulary from the feature names -- "Mono8" is a value, not a feature.
+SFNC_ENUM_ENTRIES = frozenset((
+    "Mono8", "Mono10", "Mono12", "Mono14", "Mono16",
+    "RGB8", "RGB8Packed", "BGR8", "BayerRG8", "BayerGR8", "BayerGB8",
+    "BayerBG8", "YCbCr422_8",
+    "Continuous", "SingleFrame", "MultiFrame",
+    "Off", "On", "Once", "Continuous",
+))
+
+
 class FeatureError(Exception):
     pass
 
@@ -56,6 +92,9 @@ class Feature:
        `DeviceControl`.
     2. The buffer's shape or encoding -- Width, Height, OffsetX/Y,
        PixelFormat, Binning, Decimation, TestPattern? `ImageFormatControl`.
+       Note `PayloadSize` is *not* one of these despite following from them:
+       it counts bytes on the stream channel, so it is
+       `TransportLayerControl`.
     3. *Time* -- when, how long, how often? AcquisitionMode, Start/Stop,
        AcquisitionFrameRate, ExposureTime, and all triggering.
        `AcquisitionControl`.

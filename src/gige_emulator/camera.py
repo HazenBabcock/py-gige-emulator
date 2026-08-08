@@ -93,8 +93,12 @@ class EmulatedCamera(object):
         # client sizes its receive buffer from it and then rejects any packet
         # id past what that buffer implies, with no error -- so an
         # inconsistent value here shows up as a black image, not a message.
+        # TransportLayerControl, not ImageFormatControl: this is a count of
+        # bytes on the stream channel rather than anything about the image's
+        # shape. Checked against a vendor-authored XML, which files it the
+        # same way.
         add(IntFeature("PayloadSize", "Bytes transferred per image",
-                       "ImageFormatControl", "RO",
+                       "TransportLayerControl", "RO",
                        default=c.payload_size(width, height,
                                               c.PIXEL_FORMAT_NAMES[pixel_format]),
                        min=1, max=0xFFFFFFFF))

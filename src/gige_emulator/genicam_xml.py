@@ -22,7 +22,8 @@
 import xml.etree.ElementTree as ElementTree
 from xml.sax.saxutils import escape
 
-from .features import (SFNC_CATEGORIES, CommandFeature, EnumFeature,
+from .features import (SFNC_CATEGORIES, SFNC_ENUM_ENTRIES,
+                       SFNC_FEATURES, CommandFeature, EnumFeature,
                        FloatFeature, IntFeature, StringFeature)
 
 SCHEMA_NS = "http://www.genicam.org/GenApi/Version_1_0"
@@ -39,13 +40,26 @@ def _common_reg_body(feature, out, indent="\t\t"):
     out.append("%s<pPort>Device</pPort>" % indent)
 
 
+def _namespace(name, vocabulary=SFNC_FEATURES):
+    """
+    Standard when the naming convention defines this name, Custom when it is
+    this device's own.
+
+    Only the feature nodes get this. The <IntReg>/<FloatReg> behind each one
+    is named here ("WidthReg"), so those really are custom -- the vendor XML
+    this was checked against does not put a NameSpace on its register nodes
+    at all.
+    """
+    return "Standard" if name in vocabulary else "Custom"
+
+
 def _emit_feature(feature, out):
     name = feature.name
     reg = _reg_name(feature)
     description = escape(feature.description or name)
 
     if isinstance(feature, IntFeature):
-        out.append('\t<Integer Name="%s" NameSpace="Custom">' % name)
+        out.append('\t<Integer Name="%s" NameSpace="%s">' % (name, _namespace(name)))
         out.append("\t\t<Description>%s</Description>" % description)
         out.append("\t\t<pValue>%s</pValue>" % reg)
         out.append("\t\t<Min>%d</Min>" % feature.min)
@@ -61,7 +75,7 @@ def _emit_feature(feature, out):
         out.append("\t</IntReg>")
 
     elif isinstance(feature, FloatFeature):
-        out.append('\t<Float Name="%s" NameSpace="Custom">' % name)
+        out.append('\t<Float Name="%s" NameSpace="%s">' % (name, _namespace(name)))
         out.append("\t\t<Description>%s</Description>" % description)
         out.append("\t\t<pValue>%s</pValue>" % reg)
         out.append("\t\t<Min>%s</Min>" % repr(float(feature.min)))
@@ -75,11 +89,12 @@ def _emit_feature(feature, out):
         out.append("\t</FloatReg>")
 
     elif isinstance(feature, EnumFeature):
-        out.append('\t<Enumeration Name="%s" NameSpace="Custom">' % name)
+        out.append('\t<Enumeration Name="%s" NameSpace="%s">' % (name, _namespace(name)))
         out.append("\t\t<Description>%s</Description>" % description)
         for entry_name, value in feature.entries.items():
-            out.append('\t\t<EnumEntry Name="%s" NameSpace="Custom">'
-                       % escape(entry_name))
+            out.append('\t\t<EnumEntry Name="%s" NameSpace="%s">'
+                       % (escape(entry_name),
+                          _namespace(entry_name, SFNC_ENUM_ENTRIES)))
             out.append("\t\t\t<Value>%d</Value>" % value)
             out.append("\t\t</EnumEntry>")
         out.append("\t\t<pValue>%s</pValue>" % reg)
@@ -91,7 +106,7 @@ def _emit_feature(feature, out):
         out.append("\t</IntReg>")
 
     elif isinstance(feature, CommandFeature):
-        out.append('\t<Command Name="%s" NameSpace="Custom">' % name)
+        out.append('\t<Command Name="%s" NameSpace="%s">' % (name, _namespace(name)))
         out.append("\t\t<Description>%s</Description>" % description)
         out.append("\t\t<pValue>%s</pValue>" % reg)
         out.append("\t\t<CommandValue>%d</CommandValue>" % feature.command_value)
@@ -103,7 +118,7 @@ def _emit_feature(feature, out):
         out.append("\t</IntReg>")
 
     elif isinstance(feature, StringFeature):
-        out.append('\t<StringReg Name="%s" NameSpace="Custom">' % name)
+        out.append('\t<StringReg Name="%s" NameSpace="%s">' % (name, _namespace(name)))
         out.append("\t\t<Description>%s</Description>" % description)
         _common_reg_body(feature, out)
         out.append("\t</StringReg>")
