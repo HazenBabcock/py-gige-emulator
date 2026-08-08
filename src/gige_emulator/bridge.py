@@ -82,6 +82,16 @@ class FeatureBridge(object):
             raise MemoryError_("%s is read only" % feature.name,
                                c.ERROR_WRITE_PROTECT)
 
+        # The client sized its buffers from PayloadSize when acquisition
+        # started, so moving the geometry now would leave it dropping every
+        # packet past the old count without reporting anything. Refusing is
+        # the only answer it can act on.
+        if feature.affects_payload and self.camera.acquiring:
+            self._restore(feature)
+            raise MemoryError_(
+                "%s cannot be changed while acquiring" % feature.name,
+                c.ERROR_BUSY)
+
         with self.lock:
             raw = self.memory._read_raw(feature.address, feature.size)
         value = feature.decode(raw)
@@ -105,10 +115,11 @@ class FeatureBridge(object):
             raise MemoryError_("%s rejected by the camera: %s"
                                % (feature.name, e), c.ERROR_INVALID_PARAMETER)
 
-        # Geometry changes move the payload size, which the client reads to
-        # size its buffer.
-        if feature.name in ("Width", "Height", "PixelFormat"):
-            self.refresh_payload_size()
+        # A geometry change may have moved Width and Height too -- binning is
+        # the usual case -- so re-publish everything derived from it rather
+        # than just the payload size.
+        if feature.affects_payload:
+            self.refresh_geometry()
 
     def _restore(self, feature):
         """Put the stored value back into the register."""
@@ -149,12 +160,24 @@ class FeatureBridge(object):
 
     # --- device side bookkeeping ----------------------------------------
 
-    def refresh_payload_size(self):
+    def refresh_geometry(self):
+        """
+        Re-publish everything derived from the geometry.
+
+        A camera is free to change Width and Height from inside
+        set_camera_settings -- selecting a binned sensor mode does exactly
+        that -- so the registers have to be brought back in step with
+        self.settings afterwards, not just PayloadSize.
+        """
         with self.lock:
-            payload = self.camera.payload_size()
-            self.camera.settings["PayloadSize"] = payload
-            feature = self.features.by_name["PayloadSize"]
-            self.memory.poke_bytes(feature.address, feature.encode(payload))
+            self.camera.settings["PayloadSize"] = self.camera.payload_size()
+            for name in ("Width", "Height", "PixelFormat", "PayloadSize"):
+                feature = self.features.by_name.get(name)
+                if feature is None:
+                    continue
+                self.memory.poke_bytes(
+                    feature.address,
+                    feature.encode(self.camera.settings[name]))
 
     def sync_all_to_memory(self):
         """Write every stored setting into its register. Called at startup."""

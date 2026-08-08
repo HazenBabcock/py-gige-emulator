@@ -78,13 +78,13 @@ class EmulatedCamera(object):
                        "ImageFormatControl", "RO", default=sensor_height,
                        min=1, max=sensor_height))
         add(IntFeature("Width", "Image width in pixels",
-                       "ImageFormatControl", "RO", default=width,
-                       min=1, max=sensor_width))
+                       "ImageFormatControl", "RO", affects_payload=True,
+                       default=width, min=1, max=sensor_width))
         add(IntFeature("Height", "Image height in pixels",
-                       "ImageFormatControl", "RO", default=height,
-                       min=1, max=sensor_height))
+                       "ImageFormatControl", "RO", affects_payload=True,
+                       default=height, min=1, max=sensor_height))
         add(EnumFeature("PixelFormat", "Pixel format",
-                        "ImageFormatControl", "RO",
+                        "ImageFormatControl", "RO", affects_payload=True,
                         entries={name: c.PIXEL_FORMAT_NAMES[name]
                                  for name in pixel_formats},
                         default=pixel_format))

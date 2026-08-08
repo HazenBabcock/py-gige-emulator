@@ -61,7 +61,7 @@ class GigECameraServer(object):
 
         self.bridge = FeatureBridge(camera, self.memory, self.lock)
         self.bridge.sync_all_to_memory()
-        self.bridge.refresh_payload_size()
+        self.bridge.refresh_geometry()
 
         self.control = ControlChannel(
             self.memory, self.lock, port=gvcp_port, bind_address=bind_address,

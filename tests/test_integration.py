@@ -27,6 +27,10 @@ class PatternCamera(EmulatedCamera):
                      default=10000.0, min=1.0, max=1e6, unit="us"),
         IntFeature("GainRaw", "", "AnalogControl", "RW", default=1,
                    min=1, max=22),
+        # Stands in for the Pi example's binning: writing it changes the
+        # frame size, so it must be refused while acquiring.
+        IntFeature("Binning", "", "ImageFormatControl", "RW",
+                   affects_payload=True, default=1, min=1, max=4),
     )
 
     def __init__(self, **kwds):
@@ -51,6 +55,12 @@ class PatternCamera(EmulatedCamera):
 
     def set_camera_settings(self, changed):
         self.applied.append(dict(changed))
+        if "Binning" in changed:
+            # Same shape as the Pi example: the camera changes its own
+            # geometry from inside the hook, and the emulator republishes it.
+            factor = changed["Binning"]
+            self.settings["Width"] = WIDTH // factor
+            self.settings["Height"] = HEIGHT // factor
 
     def get_camera_settings(self):
         self.reads += 1
@@ -190,6 +200,49 @@ def test_an_out_of_range_value_is_rejected_and_rolled_back(client, server):
         client.write_register(feature.address, 999)     # max is 22
     assert camera.settings["GainRaw"] == 5
     assert client.read_register(feature.address) == 5
+
+
+def test_a_payload_feature_is_refused_while_acquiring(client, server):
+    """
+    The client sized its buffers from PayloadSize at AcquisitionStart, so a
+    geometry change now would leave it dropping every packet past the old
+    count with nothing reported. It has to be refused, not silently latched.
+    """
+    camera = server.camera
+    binning = camera.feature_set.by_name["Binning"]
+    client.take_control()
+
+    client.write_register(binning.address, 2)      # allowed while stopped
+    assert camera.settings["Binning"] == 2
+
+    packet_size = client.open_stream()
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStart"].address, 1)
+    client.receive_frame(packet_size)
+
+    with pytest.raises(FakeClientError):
+        client.write_register(binning.address, 4)
+    assert camera.settings["Binning"] == 2
+    assert client.read_register(binning.address) == 2
+
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStop"].address, 1)
+    client.write_register(binning.address, 4)      # allowed again
+    assert camera.settings["Binning"] == 4
+
+
+def test_a_payload_feature_republishes_the_geometry(client, server):
+    camera = server.camera
+    client.take_control()
+    binning = camera.feature_set.by_name["Binning"]
+    width = camera.feature_set.by_name["Width"]
+    payload = camera.feature_set.by_name["PayloadSize"]
+
+    client.write_register(binning.address, 2)
+    # The camera changed Width from inside set_camera_settings, so the
+    # registers must have followed without anyone writing them.
+    assert client.read_register(width.address) == WIDTH // 2
+    assert client.read_register(payload.address) == (WIDTH // 2) * (HEIGHT // 2)
 
 
 def test_a_read_only_feature_is_refused(client, server):

@@ -31,6 +31,12 @@ class Feature:
     access: str = "RW"
     address: int = None          # assigned by FeatureSet.allocate()
 
+    #: True if writing this changes how many bytes a frame occupies. The
+    #: client sizes its buffers from PayloadSize when acquisition starts and
+    #: silently drops any packet past the count that implies, so these are
+    #: refused while streaming. GenICam calls the same idea TLParamsLocked.
+    affects_payload: bool = False
+
     size = 4
     settable = True
 

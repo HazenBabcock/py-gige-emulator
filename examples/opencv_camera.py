@@ -32,6 +32,43 @@ DEFAULT_EXPOSURE_SCALE = 100.0
 AUTO_EXPOSURE_ON = 3.0
 AUTO_EXPOSURE_OFF = 1.0
 
+# OpenCV has no API for listing a camera's supported modes, so the only
+# portable way to find them is to ask for each in turn and see what comes
+# back. These are the common UVC sizes; a camera that supports something else
+# can still be driven with an explicit --width/--height.
+CANDIDATE_MODES = [
+    (160, 120), (320, 180), (320, 240), (352, 288), (640, 360), (640, 480),
+    (800, 600), (848, 480), (960, 540), (1024, 768), (1280, 720),
+    (1280, 960), (1280, 1024), (1600, 896), (1600, 1200), (1920, 1080),
+    (2560, 1440), (3840, 2160),
+]
+
+
+def probe_modes(device, candidates=CANDIDATE_MODES):
+    """
+    Ask the camera for each candidate size and record what it actually gave.
+
+    A webcam substitutes its nearest supported mode rather than failing, so
+    the set of distinct answers is the set of real modes -- but only for the
+    sizes probed. This is a discovery aid, not an authoritative list; on
+    Linux `v4l2-ctl --list-formats-ext` is the ground truth.
+    """
+    cap = cv2.VideoCapture(device)
+    if not cap.isOpened():
+        raise RuntimeError("cannot open OpenCV device %r" % (device,))
+    found = []
+    try:
+        for width, height in candidates:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            actual = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                      int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+            if actual not in found and actual != (0, 0):
+                found.append(actual)
+    finally:
+        cap.release()
+    return found
+
 
 class OpenCvCamera(EmulatedCamera):
 
@@ -138,6 +175,11 @@ if __name__ == "__main__":
                         help="network interface to serve on")
     parser.add_argument("--device", type=int, default=0,
                         help="OpenCV device index")
+    parser.add_argument("--list-modes", action="store_true",
+                        help="probe and print the sizes this camera supports, "
+                             "then exit")
+    parser.add_argument("--mode", default=None,
+                        help="frame size as WIDTHxHEIGHT, e.g. 1280x720")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--pixel-format", default="Mono8",
@@ -152,8 +194,24 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(name)s: %(message)s")
 
-    camera = OpenCvCamera(device=args.device, width=args.width,
-                          height=args.height, pixel_format=args.pixel_format,
+    if args.list_modes:
+        print("device %d supports:" % args.device)
+        for width, height in probe_modes(args.device):
+            print("  %dx%d" % (width, height))
+        print("\nSelect one with --mode WIDTHxHEIGHT. There is no standard "
+              "GigE Vision\nway to offer these as a choice to the client, so "
+              "the mode is fixed here\nat startup.")
+        sys.exit(0)
+
+    width, height = args.width, args.height
+    if args.mode is not None:
+        try:
+            width, height = (int(v) for v in args.mode.lower().split("x"))
+        except ValueError:
+            parser.error("--mode wants WIDTHxHEIGHT, e.g. 1280x720")
+
+    camera = OpenCvCamera(device=args.device, width=width, height=height,
+                          pixel_format=args.pixel_format,
                           exposure_scale=args.exposure_scale)
 
     server = GigECameraServer(camera, interface=args.interface,
