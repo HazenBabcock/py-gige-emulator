@@ -1,0 +1,14 @@
+__pycache__/
+*.py[codz]
+*.so
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Editor backup / autosave files
+*~
+\#*\#
+.\#*

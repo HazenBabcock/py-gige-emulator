@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gige-emulator"
+version = "0.1.0"
+description = "Pure Python GigE Vision camera emulator"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Hazen Babcock"}]
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest", "numpy"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
