@@ -160,11 +160,17 @@ class EmulatedCamera(object):
     def set_camera_settings(self, changed):
         """
         Apply settings the client just changed. `changed` holds only the
-        features that moved, not the whole dictionary; self.settings always
-        holds the full current state.
+        features that moved, not the whole dictionary.
 
-        Raising rolls the register write back and answers the client with
-        ACCESS_DENIED rather than reporting a success that did not happen.
+        Note the ordering: self.settings has **already** been updated with the
+        new values by the time this is called. So comparing a requested value
+        against self.settings here always says "unchanged" -- if you need to
+        know what the hardware is currently configured for, track that
+        yourself. examples/pi_camera.py keeps an _applied_binning for exactly
+        this reason.
+
+        Raising rolls the register write back and answers the client with an
+        error rather than reporting a success that did not happen.
         """
 
     def get_camera_settings(self):
