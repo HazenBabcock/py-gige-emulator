@@ -115,13 +115,22 @@ $ sudo sysctl -w net.core.rmem_default=20000000
 Large frames want jumbo frames on both ends and a matching `GevSCPSPacketSize`.
 The device honours the packet delay register if a client sets one.
 
-Most clients size their own packets by asking the device to fire a test packet
-at a candidate size and seeing whether it arrives, and the device answers those
-probes — including the don't-fragment bit, which is what makes an oversized
-probe fail rather than quietly fragment. So the negotiated size follows the
-path MTU on its own: on a plain 1500 byte link clients settle at 1488, and
-raising the MTU at both ends is enough to move them up without setting
-anything by hand.
+Some clients size their own packets by asking the device to fire a test packet
+at a candidate size and seeing whether it arrives. The device answers those
+probes, including the don't-fragment bit, which is what makes an oversized
+probe fail rather than quietly fragment — so such a client finds the path MTU
+on its own and raising the MTU at both ends moves it up with nothing set by
+hand. ImpactAcquire does this, and settles at 1488 on a plain 1500 byte link.
+
+**Aravis does not.** It reads the packet size register and uses whatever it
+finds, and never writes it — not even with `--packet-size-adjustment=always`,
+which only ever reduces on a failure. For Aravis the emulator's own
+`--packet-size` is the setting that matters, so match it to the link.
+
+Note the register is device state that outlives the client that set it: once a
+probing client has negotiated 1488, a later non-probing client sees 1488 too.
+That makes back-to-back measurements easy to misread — restart the emulator
+between them.
 
 #### Tests ####
 
