@@ -77,10 +77,10 @@ frame the pipeline genuinely dropped.
   written. The register map and the XML come from the same source, so they
   cannot drift — an `<Address>` that disagrees with what the device stores
   fails in a way that looks like a client bug.
-* **Two threads.** Control and streaming are separate, unlike the Aravis
-  reference implementation, because `next_frame()` is a real camera grab. A one
-  second exposure on a single thread would block GVCP past the client's command
-  timeout and cost you control mid-acquisition.
+* **Two threads.** Control and streaming are separate because `next_frame()`
+  is a real camera grab. A one second exposure on a single thread would
+  block GVCP past the client's command timeout and cost you control
+  mid-acquisition.
 * **`next_frame()` sets the frame rate.** There is no timer in the stream
   thread — it sends frames exactly as fast as your hook returns them, so a
   real camera blocking until the sensor delivers paces the stream for free and

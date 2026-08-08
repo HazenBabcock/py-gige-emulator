@@ -34,6 +34,10 @@ log = logging.getLogger(__name__)
 
 SEND_BUFFER_SIZE = 8 * 1024 * 1024
 
+# How long stop() waits for the stream thread. Not sized to cover an exposure
+# on purpose -- see stop().
+SHUTDOWN_JOIN_TIMEOUT = 3.0
+
 # Linux socket options for the don't-fragment bit, from <linux/in.h>. Python's
 # socket module does not export these on every build, so they are spelled out
 # and applied defensively rather than imported.
@@ -92,10 +96,30 @@ class StreamChannel(object):
         self.thread.start()
 
     def stop(self):
+        """
+        Stop streaming. Returns once the thread is gone, or after
+        SHUTDOWN_JOIN_TIMEOUT if it is still inside next_frame().
+
+        The join is deliberately not long enough to cover any exposure. A
+        camera can be asked for a ten second one, and blocking a caller that
+        long to shut down is worse than letting the thread finish on its own
+        -- so the thread is built to come back to a closed socket and do
+        nothing, rather than the socket being kept alive to wait for it.
+        """
         self.running = False
-        if self.thread is not None:
-            self.thread.join(timeout=3.0)
-            self.thread = None
+        thread = self.thread
+        if thread is not None:
+            thread.join(timeout=SHUTDOWN_JOIN_TIMEOUT)
+            if thread.is_alive():
+                # Keep the handle. Clearing it here would lose the only
+                # reference to a live thread, and a second stop() would then
+                # believe it had nothing to wait for.
+                log.warning("stream thread did not stop within %.1f s and is "
+                            "probably still inside next_frame(); it will exit "
+                            "when that returns",
+                            SHUTDOWN_JOIN_TIMEOUT)
+            else:
+                self.thread = None
         if self.socket is not None:
             self.socket.close()
             self.socket = None
@@ -127,11 +151,12 @@ class StreamChannel(object):
         cannot fail a client's oversized probe, so the client may settle on a
         packet size the path has to fragment.
         """
-        if self.socket is None:
+        sock = self.socket
+        if sock is None:
             return False
         mode = IP_PMTUDISC_DO if on else IP_PMTUDISC_DONT
         try:
-            self.socket.setsockopt(socket.IPPROTO_IP, IP_MTU_DISCOVER, mode)
+            sock.setsockopt(socket.IPPROTO_IP, IP_MTU_DISCOVER, mode)
             return True
         except OSError as e:
             log.debug("cannot set the don't fragment bit: %s", e)
@@ -151,7 +176,10 @@ class StreamChannel(object):
         fails with EMSGSIZE and *that silence is the answer*. The client times
         out, steps down a size, and tries again.
         """
-        if self.socket is None:
+        # Snapshot rather than re-read: stop() can null this between the
+        # check and the send.
+        sock = self.socket
+        if sock is None:
             return False
         with self.lock:
             target = self._stream_target()
@@ -168,7 +196,7 @@ class StreamChannel(object):
 
         self.set_dont_fragment(do_not_fragment)
         try:
-            self.socket.sendto(datagram, target)
+            sock.sendto(datagram, target)
         except OSError as e:
             log.debug("packet size probe of %d bytes not sent: %s",
                       packet_size, e)
@@ -263,8 +291,18 @@ class StreamChannel(object):
             frame_id = gvsp.next_frame_id(self.frame_id)
         self.frame_id = frame_id
 
+        # Snapshot the socket. stop() closes it and drops the reference
+        # without waiting for an exposure to finish, so by the time a slow
+        # next_frame() returns there may be nothing left to send on -- the
+        # same "stopped while we were inside next_frame()" case the
+        # acquiring check above covers, for shutdown rather than
+        # AcquisitionStop.
+        sock = self.socket
+        if sock is None or not self.running:
+            return
+
         ceiling = gvsp.max_datagram_size(packet_size)
-        send = self.socket.sendto
+        send = sock.sendto
         delay_s = packet_delay / 1e9 if packet_delay else 0.0
 
         count = 0

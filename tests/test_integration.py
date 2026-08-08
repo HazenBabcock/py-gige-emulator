@@ -11,6 +11,7 @@ from fakeclient import FakeClient, FakeClientError
 from gige_emulator import (EmulatedCamera, FloatFeature, GigECameraServer,
                            IntFeature)
 from gige_emulator import constants as c
+from gige_emulator import stream as stream_module
 
 WIDTH, HEIGHT = 64, 48
 PORT = 13956
@@ -359,3 +360,59 @@ def test_a_duplicate_command_id_is_answered_twice(client, server):
     second = client._command(c.CMD_READ_REGISTER, payload,
                              c.ACK_READ_REGISTER, packet_id=4242)
     assert first == second == struct.pack(">I", 1)
+
+
+def test_stopping_during_a_long_exposure_does_not_kill_the_stream_thread():
+    """
+    stop() will not wait out an exposure -- a camera can be asked for ten
+    seconds and blocking the caller that long is worse. So the thread comes
+    back from next_frame() to a socket that has been closed and dropped, and
+    it has to notice rather than dereference it.
+
+    This is built without the shared fixtures because it needs a next_frame()
+    slower than the join, and a heartbeat long enough that the controller is
+    not dropped mid-exposure -- expiry clears `acquiring`, which skips the
+    send and hides the bug.
+    """
+    import threading
+
+    exposure = stream_module.SHUTDOWN_JOIN_TIMEOUT + 2.0
+
+    class SlowCamera(EmulatedCamera):
+        def next_frame(self):
+            time.sleep(exposure)
+            return b"\x40" * self.geometry["payload"]
+
+        def set_camera_settings(self, changed):
+            pass
+
+        def get_camera_settings(self):
+            return {}
+
+    camera = SlowCamera(width=32, height=24, pixel_format="Mono8")
+    srv = GigECameraServer(camera, ip="127.0.0.1", netmask="255.0.0.0",
+                           model_name="Slow", serial_number="SLOW-1",
+                           gvcp_port=PORT + 1, bind_address="127.0.0.1",
+                           heartbeat_timeout_ms=60000)
+    srv.start()
+
+    failures = []
+    previous = threading.excepthook
+    threading.excepthook = failures.append
+    try:
+        with FakeClient(("127.0.0.1", PORT + 1)) as slow_client:
+            slow_client.take_control()
+            slow_client.open_stream(packet_size=1400)
+            slow_client.write_register(
+                camera.feature_set.by_name["AcquisitionStart"].address, 1)
+            time.sleep(0.5)                       # well inside the exposure
+            srv.stop()
+        # Let the orphaned thread finish its exposure and return.
+        time.sleep(exposure + 0.5)
+    finally:
+        threading.excepthook = previous
+
+    assert not [f.exc_type.__name__ for f in failures], (
+        "stream thread raised on shutdown: %s"
+        % [f.exc_value for f in failures])
+    assert not any(t.name == "gvsp-stream" for t in threading.enumerate())
