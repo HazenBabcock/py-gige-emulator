@@ -75,7 +75,16 @@ class OpenCvCamera(EmulatedCamera):
     extra_features = (
         FloatFeature("ExposureTime", "Exposure time", "AcquisitionControl",
                      "RW", default=10000.0, min=1.0, max=1e6, unit="us"),
-        IntFeature("GainRaw", "Analog gain", "AnalogControl", "RW",
+        # GainRaw, not Gain, and deliberately. The convention's Gain is a
+        # float in dB, which needs the underlying value to be a linear
+        # multiplier -- and cv2.CAP_PROP_GAIN is whatever V4L2 control the
+        # driver happens to expose, in units it does not report. Converting
+        # would be inventing information, and the range includes zero, which
+        # has no dB value at all. GainRaw is the GenICam 1.x name that exists
+        # for exactly this case: device-specific integer gain. The Pi example
+        # does have a real multiplier and uses Gain in dB.
+        IntFeature("GainRaw", "Analog gain, in the driver's own units",
+                   "AnalogControl", "RW",
                    default=1, min=0, max=255),
     )
 

@@ -25,6 +25,7 @@
 
 import argparse
 import logging
+import math
 import os
 import sys
 import threading
@@ -45,7 +46,26 @@ log = logging.getLogger("pi_camera")
 # The IMX477's analogue gain register saturates at 1024/(1024-978), so
 # anything above this is digital gain, which amplifies read noise rather than
 # signal. Bounding the feature here means a client cannot ask for it.
-IMX477_MAX_ANALOGUE_GAIN = 22
+IMX477_MAX_ANALOGUE_GAIN = 1024.0 / (1024.0 - 978.0)
+
+
+def gain_to_db(linear):
+    """
+    libcamera's AnalogueGain is a linear multiplier; the naming convention's
+    Gain feature is in dB.
+
+    Sensor gain is a signal amplitude ratio, so the factor is 20 and not 10.
+    Getting that wrong halves every number and still looks entirely
+    plausible, which is why it is spelled out here rather than inlined.
+    """
+    return 20.0 * math.log10(max(linear, 1e-6))
+
+
+def db_to_gain(db):
+    return 10.0 ** (db / 20.0)
+
+
+IMX477_MAX_GAIN_DB = gain_to_db(IMX477_MAX_ANALOGUE_GAIN)
 
 # Binning here is not binning.
 #
@@ -146,8 +166,9 @@ class PiCamera(EmulatedCamera):
     extra_features = (
         FloatFeature("ExposureTime", "Exposure time", "AcquisitionControl",
                      "RW", default=90000.0, min=100.0, max=1e7, unit="us"),
-        IntFeature("GainRaw", "Analogue gain", "AnalogControl", "RW",
-                   default=1, min=1, max=IMX477_MAX_ANALOGUE_GAIN),
+        FloatFeature("Gain", "Analogue gain", "AnalogControl", "RW",
+                     default=0.0, min=0.0, max=IMX477_MAX_GAIN_DB,
+                     unit="dB"),
         IntFeature("BinningHorizontal", "Horizontal binning (see the note "
                    "at the top of this file -- it selects a smaller stream "
                    "size rather than binning the sensor)",
@@ -187,7 +208,7 @@ class PiCamera(EmulatedCamera):
         self.picam2.set_controls({
             "AeEnable": False,
             "ExposureTime": int(self.settings["ExposureTime"]),
-            "AnalogueGain": float(self.settings["GainRaw"]),
+            "AnalogueGain": db_to_gain(self.settings["Gain"]),
             "FrameRate": frame_rate,
         })
 
@@ -318,8 +339,8 @@ class PiCamera(EmulatedCamera):
             if exposure_us > 0 and rate > 1e6 / exposure_us:
                 controls["FrameRate"] = max(0.1, 1e6 / exposure_us)
 
-        if "GainRaw" in changed:
-            controls["AnalogueGain"] = float(changed["GainRaw"])
+        if "Gain" in changed:
+            controls["AnalogueGain"] = db_to_gain(changed["Gain"])
 
         if "AcquisitionFrameRate" in changed:
             controls["FrameRate"] = float(changed["AcquisitionFrameRate"])
@@ -341,7 +362,10 @@ class PiCamera(EmulatedCamera):
         if "ExposureTime" in metadata:
             out["ExposureTime"] = float(metadata["ExposureTime"])
         if "AnalogueGain" in metadata:
-            out["GainRaw"] = int(round(metadata["AnalogueGain"]))
+            # Reported as a float now rather than rounded to a whole
+            # multiplier, which used to throw away most of the sensor's
+            # resolution between 1x and 2x.
+            out["Gain"] = gain_to_db(float(metadata["AnalogueGain"]))
         return out
 
 

@@ -19,7 +19,7 @@ class MyCamera(EmulatedCamera):
     # provided. Declare anything else you want the client to see.
     extra_features = (
         FloatFeature("ExposureTime", default=10000.0, min=1.0, max=1e6, unit="us"),
-        IntFeature("GainRaw", default=1, min=1, max=22),
+        FloatFeature("Gain", default=0.0, min=0.0, max=24.0, unit="dB"),
     )
 
     def next_frame(self):

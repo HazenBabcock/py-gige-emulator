@@ -14,7 +14,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from gige_emulator import (EmulatedCamera, FloatFeature, GigECameraServer,
-                           IntFeature, netif)
+                           netif)
 
 
 class NoiseCamera(EmulatedCamera):
@@ -23,8 +23,8 @@ class NoiseCamera(EmulatedCamera):
         FloatFeature("ExposureTime", "Exposure time",
                      "AcquisitionControl", "RW",
                      default=10000.0, min=1.0, max=1e6, unit="us"),
-        IntFeature("GainRaw", "Analog gain", "AnalogControl", "RW",
-                   default=1, min=1, max=22),
+        FloatFeature("Gain", "Analog gain", "AnalogControl", "RW",
+                     default=0.0, min=0.0, max=24.0, unit="dB"),
     )
 
     def __init__(self, **kwds):

@@ -1,3 +1,4 @@
+import math
 import os
 import struct
 
@@ -158,3 +159,43 @@ def test_a_test_packet_can_never_be_mistaken_for_a_frame():
 
 def test_a_test_packet_smaller_than_the_header_is_refused():
     assert gvsp.test_packet(c.GVSP_PROTOCOL_OVERHEAD - 1) is None
+
+
+# --- gain in dB ----------------------------------------------------------
+#
+# The Pi example cannot be imported here (it needs picamera2), so its two
+# conversion helpers are re-derived from the same definition. What is being
+# pinned is the factor of 20: sensor gain is an amplitude ratio, and using 10
+# halves every number while still looking entirely reasonable.
+
+def _gain_to_db(linear):
+    return 20.0 * math.log10(max(linear, 1e-6))
+
+
+def _db_to_gain(db):
+    return 10.0 ** (db / 20.0)
+
+
+@pytest.mark.parametrize("linear,db", [
+    (1.0, 0.0),
+    (2.0, 6.0206),
+    (10.0, 20.0),
+    (22.2609, 26.950854),
+])
+def test_gain_converts_as_an_amplitude_ratio_not_a_power_one(linear, db):
+    assert _gain_to_db(linear) == pytest.approx(db, abs=1e-3)
+
+
+def test_gain_survives_the_round_trip_a_client_puts_it_through():
+    """
+    A client writes dB and reads dB back; the hardware only ever sees the
+    linear factor in between.
+    """
+    for db in (0.0, 3.0, 6.0206, 12.0, 26.950854):
+        assert _gain_to_db(_db_to_gain(db)) == pytest.approx(db, abs=1e-9)
+
+
+def test_the_imx477_ceiling_is_where_analogue_gain_actually_saturates():
+    linear = 1024.0 / (1024.0 - 978.0)
+    assert linear == pytest.approx(22.2609, abs=1e-4)
+    assert _gain_to_db(linear) == pytest.approx(26.95, abs=0.01)

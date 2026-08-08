@@ -42,9 +42,10 @@ SFNC_CATEGORIES = frozenset((
 #: checked -- this list is short on purpose and grows deliberately.
 #:
 #: `GainRaw` is deliberately absent. It is the GenICam 1.x integer form; the
-#: convention's gain feature is `Gain`, a float in dB paired with a
-#: `GainSelector`. The old name is kept because it is what the examples and
-#: anyone's settings dict already use, but it is this device's own name now.
+#: convention's gain feature is `Gain`, a float in dB. GainRaw is still the
+#: right name for a device whose gain control is in units it cannot report --
+#: a webcam's is whatever V4L2 hands back, and zero has no dB value -- but it
+#: is that device's own name, not the convention's.
 SFNC_FEATURES = frozenset((
     "Width", "Height", "SensorWidth", "SensorHeight", "PixelFormat",
     "OffsetX", "OffsetY", "BinningHorizontal", "BinningVertical",
