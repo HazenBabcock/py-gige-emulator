@@ -38,7 +38,7 @@ from picamera2.outputs import Output
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from gige_emulator import (EmulatedCamera, Frame, FloatFeature,
-                           GigECameraServer, IntFeature)
+                           GigECameraServer, IntFeature, netif)
 
 log = logging.getLogger("pi_camera")
 
@@ -349,6 +349,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Raspberry Pi -> GigE camera")
     parser.add_argument("--interface", default="eth0",
                         help="network interface to serve on")
+    parser.add_argument("--name", default="",
+                        help="user-defined camera name. Clients show this and "
+                             "can select on it, so it is how you tell two "
+                             "otherwise identical cameras apart")
     parser.add_argument("--list-modes", action="store_true",
                         help="print the sensor modes libcamera reports, "
                              "then exit")
@@ -379,6 +383,13 @@ if __name__ == "__main__":
               "file about what\nbinning really means here.")
         sys.exit(0)
 
+    # Check the interface before opening the camera, so a typo fails with a
+    # readable message rather than a traceback after the sensor is live.
+    try:
+        netif.interface_info(args.interface)
+    except netif.InterfaceError as e:
+        parser.error(str(e))
+
     width, height = args.width, args.height
     if args.mode is not None:
         try:
@@ -391,6 +402,7 @@ if __name__ == "__main__":
 
     server = GigECameraServer(camera, interface=args.interface,
                               model_name="PiHQ", serial_number="PI-0001",
+                              user_defined_name=args.name,
                               packet_size=args.packet_size)
     print("serving %dx%d Mono16 (%.1f MB/frame), ctrl-c to exit."
           % (camera.settings["Width"], camera.settings["Height"],

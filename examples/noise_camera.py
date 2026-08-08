@@ -14,7 +14,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from gige_emulator import (EmulatedCamera, FloatFeature, GigECameraServer,
-                           IntFeature)
+                           IntFeature, netif)
 
 
 class NoiseCamera(EmulatedCamera):
@@ -64,6 +64,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Noise -> GigE camera")
     parser.add_argument("--interface", default="eth0",
                         help="network interface to serve on")
+    parser.add_argument("--name", default="",
+                        help="user-defined camera name. Clients show this and "
+                             "can select on it, so it is how you tell two "
+                             "otherwise identical cameras apart")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--pixel-format", default="Mono8")
@@ -75,6 +79,13 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(name)s: %(message)s")
 
+    # Check the interface before anything else, so a typo fails with a
+    # readable message rather than a traceback.
+    try:
+        netif.interface_info(args.interface)
+    except netif.InterfaceError as e:
+        parser.error(str(e))
+
     camera = NoiseCamera(width=args.width, height=args.height,
                          pixel_format=args.pixel_format,
                          pixel_formats=["Mono8", "Mono16"],
@@ -82,6 +93,7 @@ if __name__ == "__main__":
 
     server = GigECameraServer(camera, interface=args.interface,
                               model_name="PyNoise", serial_number="PY-0001",
+                              user_defined_name=args.name,
                               packet_size=args.packet_size)
     print("ctrl-c to exit.")
     try:

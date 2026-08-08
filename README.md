@@ -50,7 +50,19 @@ $ python examples/opencv_camera.py --interface eth0     # any cv2.VideoCapture c
 $ python examples/pi_camera.py     --interface eth0     # Raspberry Pi HQ camera
 ```
 
-then point any GigE Vision client at it.
+then point any GigE Vision client at it. All three take `--interface` to pick
+which network interface the camera appears on — naming one that does not exist
+prints the ones that do — and `--name` to set the camera's user-defined name:
+
+```
+$ python examples/pi_camera.py --interface eth0 --name bench-left
+$ arv-tool-0.8 -n bench-left control Width Height
+```
+
+That is the GigE Vision field intended for a human-chosen label (bootstrap
+register 0x00e8). Clients index it, so it is how you select one of two
+otherwise identical cameras without typing the full
+`vendor-model-serial` device id.
 
 `noise_camera.py` needs nothing but Python and is the quickest way to check the
 emulator reaches your client. `opencv_camera.py` serves a UVC webcam and shows

@@ -5,6 +5,7 @@ Subclass EmulatedCamera, implement next_frame(), and hand it to
 GigECameraServer. Any GigE Vision client on the network then sees a camera.
 """
 
+from . import netif
 from .camera import EmulatedCamera, Frame
 from .features import (CommandFeature, EnumFeature, FeatureError, FeatureSet,
                        FloatFeature, IntFeature, StringFeature)
@@ -23,4 +24,5 @@ __all__ = [
     "StringFeature",
     "FeatureSet",
     "FeatureError",
+    "netif",
 ]
