@@ -115,6 +115,14 @@ $ sudo sysctl -w net.core.rmem_default=20000000
 Large frames want jumbo frames on both ends and a matching `GevSCPSPacketSize`.
 The device honours the packet delay register if a client sets one.
 
+Most clients size their own packets by asking the device to fire a test packet
+at a candidate size and seeing whether it arrives, and the device answers those
+probes — including the don't-fragment bit, which is what makes an oversized
+probe fail rather than quietly fragment. So the negotiated size follows the
+path MTU on its own: on a plain 1500 byte link clients settle at 1488, and
+raising the MTU at both ends is enough to move them up without setting
+anything by hand.
+
 #### Tests ####
 
 ```
@@ -131,6 +139,15 @@ derived from the packet id — rather than trusting anything the device claims.
 Verified against Aravis 0.8 (`arv-tool-0.8`, `arv-camera-test-0.8`): discovery,
 GenICam feature tree, control privilege and heartbeat, and continuous
 acquisition with zero size mismatches, timeouts or missing frames.
+
+Also verified against a second, independent commercial stack — Balluff's
+`mvGenTLProducer.cti` — which enumerates the camera with full identity and
+`readwrite` access and streams complete frames from it. `tools/gentl_probe.py`
+drives any GenTL producer through the C API to check this, with `--stream N` to
+grab frames; it needs no SDK and no bindings to compile. Use it before blaming
+the emulator, because a vendor viewer cannot tell you whether its producer
+never looked, looked and rejected the device, or found it and filtered it at
+the application layer — and all three happen.
 
 Not implemented: packet resend, multipart payloads, chunk data, message
 channels, extended (64 bit) frame ids, and more than one stream channel.
