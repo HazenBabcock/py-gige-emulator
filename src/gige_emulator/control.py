@@ -18,6 +18,7 @@ import time
 from . import bootstrap
 from . import constants as c
 from . import gvcp
+from . import netif
 from .memory import MemoryError_
 
 log = logging.getLogger(__name__)
@@ -26,11 +27,12 @@ log = logging.getLogger(__name__)
 class ControlChannel(object):
 
     def __init__(self, memory, lock, port=c.GVCP_PORT, bind_address="",
-                 on_control_change=None, bridge=None):
+                 on_control_change=None, bridge=None, interface=None):
         self.memory = memory
         self.lock = lock
         self.port = port
         self.bind_address = bind_address
+        self.interface = interface
         self.on_control_change = on_control_change
 
         # The bridge runs user code, so it is always called with the lock
@@ -56,6 +58,19 @@ class ControlChannel(object):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
+        # The bind below is to INADDR_ANY, because a socket bound to a
+        # specific address does not receive broadcast and broadcast is how
+        # discovery arrives. Restrict to the chosen interface at the device
+        # level instead, or a machine with two interfaces answers discovery
+        # on both while advertising only one of its addresses -- which works
+        # by luck when they share a subnet and fails confusingly otherwise.
+        if self.interface is not None:
+            if not netif.bind_to_device(self.socket, self.interface):
+                log.warning("cannot restrict the control socket to %s; it "
+                            "will answer discovery on every interface",
+                            self.interface)
+
         self.socket.bind((self.bind_address, self.port))
         self.socket.settimeout(0.2)
         self.running = True

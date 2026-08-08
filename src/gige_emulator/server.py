@@ -63,11 +63,15 @@ class GigECameraServer(object):
         self.bridge.sync_all_to_memory()
         self.bridge.refresh_geometry()
 
+        # Only restrict to a device when we were given one by name. Starting
+        # from a bare ip= -- which is how the loopback tests run -- leaves
+        # both sockets unrestricted, as before.
         self.control = ControlChannel(
             self.memory, self.lock, port=gvcp_port, bind_address=bind_address,
-            bridge=self.bridge, on_control_change=self._on_control_change)
+            bridge=self.bridge, on_control_change=self._on_control_change,
+            interface=interface)
         self.stream = StreamChannel(camera, self.memory, self.lock, ip,
-                                    control=self.control)
+                                    control=self.control, interface=interface)
 
     def _on_control_change(self, has_control):
         if not has_control:

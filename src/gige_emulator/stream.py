@@ -27,6 +27,7 @@ import time
 
 from . import constants as c
 from . import gvsp
+from . import netif
 from .camera import Frame
 
 log = logging.getLogger(__name__)
@@ -37,13 +38,14 @@ SEND_BUFFER_SIZE = 8 * 1024 * 1024
 class StreamChannel(object):
 
     def __init__(self, camera, memory, lock, device_ip,
-                 control=None, idle_poll=0.02):
+                 control=None, idle_poll=0.02, interface=None):
         self.camera = camera
         self.memory = memory
         self.lock = lock
         self.device_ip = device_ip
         self.control = control
         self.idle_poll = idle_poll
+        self.interface = interface
 
         self.socket = None
         self.thread = None
@@ -60,6 +62,18 @@ class StreamChannel(object):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF,
                                SEND_BUFFER_SIZE)
+
+        # Binding to device_ip already fixes the source address, but routing
+        # still picks the egress interface. Pinning the device too means a
+        # client reachable only some other way fails loudly with
+        # ENETUNREACH -- which the send loop logs -- rather than quietly
+        # emitting frames from the wrong NIC with a source the client's
+        # filter may not match.
+        if self.interface is not None:
+            if not netif.bind_to_device(self.socket, self.interface):
+                log.warning("cannot restrict the stream socket to %s",
+                            self.interface)
+
         self.socket.bind((self.device_ip, 0))
         with self.lock:
             self.memory.poke_register(c.BS_SC0_SOURCE_PORT,

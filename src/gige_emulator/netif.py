@@ -81,6 +81,31 @@ def interface_info(name):
     return ip, netmask, mac
 
 
+def bind_to_device(sock, name):
+    """
+    Restrict a socket to one network interface. Returns True on success.
+
+    This is the only way to honour "serve on eth0" for the control socket.
+    Binding to the interface's *address* would not do it: a socket bound to a
+    unicast address does not receive broadcast on Linux, and broadcast is how
+    GigE Vision discovery arrives. Binding to the device keeps broadcast and
+    still drops anything from another interface.
+
+    Not fatal if it fails -- SO_BINDTODEVICE needed CAP_NET_RAW on older
+    kernels and does not exist off Linux. The emulator then listens
+    everywhere, which is what it did before, so a caller should warn rather
+    than give up.
+    """
+    if not hasattr(socket, "SO_BINDTODEVICE"):
+        return False
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE,
+                        name.encode() + b"\x00")
+        return True
+    except OSError:
+        return False
+
+
 def broadcast_address(ip, netmask):
     ip_int = struct.unpack("!I", socket.inet_aton(ip))[0]
     mask_int = struct.unpack("!I", socket.inet_aton(netmask))[0]
