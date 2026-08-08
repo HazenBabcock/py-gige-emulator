@@ -40,6 +40,11 @@ class PatternCamera(EmulatedCamera):
         return bytes(((i * 7 + index * 13) & 0xFF) for i in range(size))
 
     def next_frame(self):
+        # No sensor to wait on, so pace here -- the stream thread has no
+        # timer and would otherwise spin as fast as this returns.
+        rate = self.settings.get("AcquisitionFrameRate", 0.0)
+        if rate and rate > 0:
+            time.sleep(1.0 / rate)
         frame = self.pattern(self.frame_index)
         self.frame_index += 1
         return frame

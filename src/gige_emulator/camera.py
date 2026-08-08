@@ -142,8 +142,18 @@ class EmulatedCamera(object):
         """
         Return the next frame as bytes, a buffer, or a Frame.
 
-        Called on the stream thread with no locks held; blocking is fine.
-        Return None to indicate that no frame is ready yet.
+        Called on the stream thread with no locks held. Blocking is not just
+        allowed, it is the point: this method sets the frame rate. The stream
+        thread has no timer of its own, so it sends frames exactly as fast as
+        this returns them.
+
+        For a real camera that means blocking until the sensor delivers,
+        which paces the stream for free and at the camera's true rate. A
+        camera with no physical timing -- a test pattern, a file reader --
+        has to pace itself, or the stream thread will saturate a core and
+        flood the network.
+
+        Return None if no frame is ready yet; the stream thread will retry.
         """
         raise NotImplementedError("subclasses must implement next_frame()")
 

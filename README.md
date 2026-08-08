@@ -42,13 +42,23 @@ GigECameraServer(camera, interface="eth0",
                  model_name="MyCam", serial_number="0001").serve_forever()
 ```
 
-Try it with no hardware at all:
+#### Examples ####
 
 ```
-$ python examples/noise_camera.py --interface eth0
+$ python examples/noise_camera.py  --interface eth0     # no hardware needed
+$ python examples/opencv_camera.py --interface eth0     # any cv2.VideoCapture camera
+$ python examples/pi_camera.py     --interface eth0     # Raspberry Pi HQ camera
 ```
 
 then point any GigE Vision client at it.
+
+`noise_camera.py` needs nothing but Python and is the quickest way to check the
+emulator reaches your client. `opencv_camera.py` serves a UVC webcam and shows
+the settings hooks driving real hardware, including reading back what the
+camera actually did with a request. `pi_camera.py` serves an IMX477 over
+libcamera/Picamera2 at 4056x3040 Mono16, and shows passing the sensor's own
+frame number and timestamp through so a gap in the client's frame ids means a
+frame the pipeline genuinely dropped.
 
 #### Design notes ####
 
@@ -60,6 +70,13 @@ then point any GigE Vision client at it.
   reference implementation, because `next_frame()` is a real camera grab. A one
   second exposure on a single thread would block GVCP past the client's command
   timeout and cost you control mid-acquisition.
+* **`next_frame()` sets the frame rate.** There is no timer in the stream
+  thread — it sends frames exactly as fast as your hook returns them, so a
+  real camera blocking until the sensor delivers paces the stream for free and
+  at its true rate. A camera with no physical timing must pace itself, or the
+  stream thread will saturate a core; `examples/noise_camera.py` shows the
+  pattern. `AcquisitionFrameRate` is therefore something you push at your
+  hardware in `set_camera_settings`, not something the emulator enforces.
 * **The settings hooks run with the device lock released**, so a slow camera
   cannot stall the stream thread. They do share the control thread with GVCP,
   though, so keep them under about 20 ms — a client built with fast heartbeats

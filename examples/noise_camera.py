@@ -9,6 +9,7 @@ import argparse
 import logging
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -29,8 +30,21 @@ class NoiseCamera(EmulatedCamera):
     def __init__(self, **kwds):
         super().__init__(**kwds)
         self._noise = None
+        self._next_due = 0.0
 
     def next_frame(self):
+        # Unlike a real camera this has no sensor to wait on, so it has to
+        # provide its own timing. The stream thread sends frames exactly as
+        # fast as next_frame() returns them, and without this it would
+        # saturate a core and flood the network.
+        rate = self.settings.get("AcquisitionFrameRate", 0.0)
+        if rate and rate > 0:
+            now = time.monotonic()
+            if self._next_due <= 0.0:
+                self._next_due = now
+            self._next_due = max(self._next_due + 1.0 / rate, now)
+            time.sleep(max(0.0, self._next_due - now))
+
         size = self.geometry["payload"]
         # os.urandom is slower than numpy but keeps the example dependency
         # free; a real camera would return its own buffer here anyway.

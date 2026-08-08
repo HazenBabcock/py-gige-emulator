@@ -10,6 +10,15 @@
 # 100 ms, so pacing between packets is not an option unless the client asked
 # for it via the packet delay register.
 #
+# There is deliberately no frame rate timer here. The physical camera sets
+# the rate, and next_frame() blocking until the sensor has something is what
+# paces the loop. A timer on this side would either fight the camera's own
+# timing or, worse, add to it -- a camera that blocks for a frame period and
+# then waits another one runs at exactly half the rate it was asked for,
+# which reads like a protocol fault rather than a scheduling one. A camera
+# with no physical timing of its own is responsible for pacing itself; see
+# the noise example.
+#
 
 import logging
 import socket
@@ -135,14 +144,16 @@ class StreamChannel(object):
                 time.sleep(0.001)
                 continue
 
+            # next_frame() blocks for as long as an exposure takes, so the
+            # client may have stopped acquisition while we were inside it.
+            # Sending anyway would deliver a frame after AcquisitionStop,
+            # which a client is entitled to treat as a protocol error.
+            with self.lock:
+                still_wanted = self.camera.acquiring
+            if not still_wanted:
+                continue
+
             self._send_frame(frame, target, packet_size, packet_delay, geometry)
-
-            self._pace(geometry)
-
-    def _pace(self, geometry):
-        rate = self.camera.settings.get("AcquisitionFrameRate", 0.0)
-        if rate and rate > 0:
-            time.sleep(max(0.0, 1.0 / rate - 0.001))
 
     def _send_frame(self, frame, target, packet_size, packet_delay, geometry):
         if isinstance(frame, Frame):
