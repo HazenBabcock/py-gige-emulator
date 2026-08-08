@@ -1,3 +1,4 @@
+import logging
 import struct
 import xml.etree.ElementTree as ElementTree
 
@@ -6,8 +7,8 @@ import pytest
 from gige_emulator import bootstrap, genicam_xml
 from gige_emulator import constants as c
 from gige_emulator.camera import EmulatedCamera
-from gige_emulator.features import (FeatureError, FeatureSet, FloatFeature,
-                                    IntFeature)
+from gige_emulator.features import (SFNC_CATEGORIES, FeatureError, FeatureSet,
+                                    FloatFeature, IntFeature)
 from gige_emulator.memory import DeviceMemory, MemoryError_
 
 
@@ -156,6 +157,60 @@ def test_the_arena_never_reaches_the_xml_url_fields():
     camera = DummyCamera()
     for feature in camera.feature_set.features:
         assert not (c.BS_XML_URL_0 <= feature.address < c.BS_XML_URL_1 + 512)
+
+
+def test_a_misspelled_category_is_named_and_corrected(caplog):
+    """
+    A typo does not fail, it quietly creates a category holding one feature.
+    In a viewer that is a stray node and nothing else, so the warning has to
+    carry the nearest real name to be worth anything.
+    """
+    features = FeatureSet()
+    with caplog.at_level(logging.WARNING, logger="gige_emulator.features"):
+        features.add(IntFeature("Foo", "", "AqcuisitionControl", "RW"))
+    assert "AqcuisitionControl" in caplog.text
+    assert "did you mean 'AcquisitionControl'" in caplog.text
+
+
+def test_an_unusual_category_warns_once_not_once_per_feature(caplog):
+    features = FeatureSet()
+    with caplog.at_level(logging.WARNING, logger="gige_emulator.features"):
+        for i in range(4):
+            features.add(IntFeature("Foo%d" % i, "", "FRETControl", "RW"))
+    assert caplog.text.count("FRETControl") == 1
+    # Invented categories are legitimate, so no suggestion is fabricated and
+    # the features are still added.
+    assert "did you mean" not in caplog.text
+    assert features.categories() == ["FRETControl"]
+
+
+def test_standard_categories_are_silent(caplog):
+    features = FeatureSet()
+    with caplog.at_level(logging.WARNING, logger="gige_emulator.features"):
+        for i, category in enumerate(sorted(SFNC_CATEGORIES)):
+            features.add(IntFeature("Foo%d" % i, "", category, "RW"))
+    assert caplog.text == ""
+
+
+def test_the_built_in_features_use_standard_categories():
+    """
+    Every camera inherits these, so a wrong category here is inherited too --
+    and the rule in Feature's docstring is only worth writing down if the
+    features shipped with the library follow it.
+    """
+    camera = DummyCamera()
+    for feature in camera.feature_set.features:
+        assert feature.category in SFNC_CATEGORIES, feature.name
+
+
+def test_exposure_and_gain_land_in_the_two_categories_people_confuse():
+    """
+    Pinning the case the docstring calls out: they are tuned together and
+    shown side by side, but exposure is time and gain is amplitude.
+    """
+    features = DummyCamera().feature_set.by_name
+    assert features["ExposureTime"].category == "AcquisitionControl"
+    assert features["GainRaw"].category == "AnalogControl"
 
 
 def test_a_gev_prefixed_feature_is_refused():

@@ -13,10 +13,27 @@
 # and no camera feature here needs it.
 #
 
+import difflib
+import logging
 import struct
 from dataclasses import dataclass, field
 
 from . import constants as c
+
+log = logging.getLogger(__name__)
+
+#: Category names from the GenICam Standard Features Naming Convention. Used
+#: only to spot typos -- a category outside this set is allowed, since a
+#: domain the convention does not cover is a real thing to have, and clients
+#: render any category fine. It is not a whitelist.
+SFNC_CATEGORIES = frozenset((
+    "DeviceControl", "ImageFormatControl", "AcquisitionControl",
+    "AnalogControl", "LUTControl", "ColorTransformationControl",
+    "CounterAndTimerControl", "DigitalIOControl", "EventControl",
+    "ChunkDataControl", "FileAccessControl", "TransportLayerControl",
+    "UserSetControl", "SequencerControl", "SoftwareSignalControl",
+    "ActionControl", "TestControl", "SourceControl", "ScanNDControl",
+))
 
 
 class FeatureError(Exception):
@@ -25,6 +42,39 @@ class FeatureError(Exception):
 
 @dataclass
 class Feature:
+    """
+    One camera feature: a register, an XML node, and a key in the settings
+    dict, all from this single declaration.
+
+    `category` decides only where a client's feature tree puts this, but that
+    is what someone hunting for a control actually navigates. The names come
+    from the GenICam Standard Features Naming Convention, not from GigE
+    Vision, which specifies the wire protocol and says nothing about feature
+    names. Four questions, in order:
+
+    1. What the camera *is* -- serial, version, temperature, reset?
+       `DeviceControl`.
+    2. The buffer's shape or encoding -- Width, Height, OffsetX/Y,
+       PixelFormat, Binning, Decimation, TestPattern? `ImageFormatControl`.
+    3. *Time* -- when, how long, how often? AcquisitionMode, Start/Stop,
+       AcquisitionFrameRate, ExposureTime, and all triggering.
+       `AcquisitionControl`.
+    4. *Amplitude*, before digitization -- Gain, BlackLevel, Gamma,
+       BalanceRatio, Sharpness? `AnalogControl`.
+
+    **Exposure and gain are not in the same category**, which is the one that
+    catches people. They are tuned together and every UI shows them side by
+    side, but exposure is time and gain is amplitude, so they land in
+    `AcquisitionControl` and `AnalogControl` respectively.
+
+    Anything else the convention names is fine too -- LUTControl,
+    DigitalIOControl, CounterAndTimerControl, TransportLayerControl,
+    UserSetControl and so on -- and inventing one for a domain the
+    convention does not cover is legitimate. `SFNC_CATEGORIES` lists the ones
+    that are not warned about; a category outside it is logged once, because
+    the common case is a typo silently creating a category of one.
+    """
+
     name: str
     description: str = ""
     category: str = "DeviceControl"
@@ -185,10 +235,33 @@ class FeatureSet(object):
         self.by_name = {}
         self.by_address = {}
         self._next = arena_start
+        self._unusual_categories = set()
+
+    def _check_category(self, feature):
+        """
+        Warn once for a category the naming convention does not define.
+
+        Not an error: a domain the convention does not cover is a legitimate
+        thing to have a category for. But a misspelling produces a *new*
+        category holding one feature, which looks like a stray node in a
+        viewer's tree and nothing else, so it is worth a line naming the
+        nearest real one.
+        """
+        category = feature.category
+        if category in SFNC_CATEGORIES or category in self._unusual_categories:
+            return
+        self._unusual_categories.add(category)
+        close = difflib.get_close_matches(category, SFNC_CATEGORIES, 1, 0.8)
+        log.warning(
+            "%r is not a standard feature category (first used by %r)%s",
+            category, feature.name,
+            "; did you mean %r?" % close[0] if close else "")
 
     def add(self, feature):
         if feature.name in self.by_name:
             raise FeatureError("duplicate feature name %r" % feature.name)
+
+        self._check_category(feature)
 
         # Aravis injects its own nodes for every transport layer feature and
         # skips any name already in the document, so a collision here would
