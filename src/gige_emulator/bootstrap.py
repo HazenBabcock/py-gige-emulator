@@ -47,7 +47,8 @@ def init_bootstrap(memory, info, xml_size):
     GenICam XML, which goes into the URL string the client parses.
     """
     memory.poke_register(c.BS_VERSION, 0x00010002)
-    memory.poke_register(c.BS_DEVICE_MODE, 0x00000001)   # UTF-8, little endian
+    memory.poke_register(c.BS_DEVICE_MODE,
+                         c.DEVICE_MODE_BIG_ENDIAN | c.DEVICE_MODE_CHARSET_UTF8)
 
     # The client reads the 6 MAC bytes from offsets 0x0a..0x0f, i.e. the low
     # half of the "high" word and all of the "low" word. Writing them at

@@ -1,3 +1,4 @@
+import struct
 import xml.etree.ElementTree as ElementTree
 
 import pytest
@@ -116,6 +117,25 @@ def test_resend_and_multipart_capability_bits_stay_clear():
     bootstrap.init_bootstrap(memory, bootstrap.DeviceInfo(ip="10.0.0.1"), 4)
     assert memory.peek_register(c.BS_GVCP_CAPABILITY) == 0
     assert memory.peek_register(c.BS_SC0_CAPABILITY) == 0
+
+
+def test_device_mode_declares_the_endianness_it_actually_serves():
+    """
+    Every register is written big endian, so bit 31 has to say so. It was
+    clear for a while, which advertised a little endian device serving big
+    endian registers -- Aravis never checks, so nothing failed visibly.
+    """
+    memory = DeviceMemory()
+    memory.set_genicam_xml(b"<x/>")
+    bootstrap.init_bootstrap(memory, bootstrap.DeviceInfo(ip="10.0.0.1"), 4)
+    mode = memory.peek_register(c.BS_DEVICE_MODE)
+    assert mode & c.DEVICE_MODE_BIG_ENDIAN
+    assert mode & 0xFFFF == c.DEVICE_MODE_CHARSET_UTF8
+
+    # And it has to survive into the ack, which is the only place a client
+    # ever sees it.
+    page = bootstrap.discovery_page(memory)
+    assert struct.unpack_from(">I", page, c.BS_DEVICE_MODE)[0] == mode
 
 
 def test_a_reserved_vendor_name_is_refused():

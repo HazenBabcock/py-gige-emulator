@@ -93,6 +93,14 @@ BS_SERIAL_NUMBER_SIZE = 16
 BS_USER_DEFINED_NAME_SIZE = 16
 BS_XML_URL_SIZE = 512
 
+# Device mode fields. Bit 31 declares the endianness of the bootstrap
+# registers, and it is not optional decoration -- every register here is
+# served big endian, so leaving it clear advertises the opposite of what the
+# device does. GenICam numbers this bit from the MSB, hence 1 << 31 rather
+# than the bit 0 the spec table appears to name.
+DEVICE_MODE_BIG_ENDIAN = 1 << 31
+DEVICE_MODE_CHARSET_UTF8 = 0x0001
+
 # The discovery ack payload is a verbatim copy of memory [0, 0xf8).
 DISCOVERY_DATA_SIZE = 0xF8
 
