@@ -120,6 +120,16 @@ CCP_CONTROL = 1 << 1
 SC_PORT_MASK = 0x0000FFFF
 SC_PACKET_SIZE_MASK = 0x0000FFFF
 
+# The top two bits of the packet size register are flags, not size. A client
+# sizes its packets by writing a candidate with FIRE_TEST set and seeing
+# whether a packet of that size comes back; ignoring the bit is not inert,
+# because the probe then fails at every size and the client falls back to the
+# 576 byte minimum. DO_NOT_FRAGMENT is what makes the probe mean anything --
+# without it an oversized test packet is fragmented, arrives, and the client
+# picks a size the path cannot actually carry.
+SC_PACKET_SIZE_FIRE_TEST = 1 << 31
+SC_PACKET_SIZE_DO_NOT_FRAGMENT = 1 << 30
+
 # Bit positions in the packet size register, in real C bit numbering.
 SC_PACKET_BIG_ENDIAN = 1 << 29
 SC_PACKET_DO_NOT_FRAGMENT = 1 << 30

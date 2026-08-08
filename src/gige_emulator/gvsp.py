@@ -27,6 +27,22 @@ def _header(frame_id, content_type, packet_id):
                         (content_type << 24) | (packet_id & c.GVSP_PACKET_ID_MASK))
 
 
+def test_packet(packet_size):
+    """
+    A packet of exactly `packet_size` bytes on the wire, for a client sizing
+    its receive path.
+
+    Block id zero, which `next_frame_id` never emits, so a client that hands
+    this to its reassembler cannot mistake it for part of a real frame. The
+    body is the header plus filler because only the length is under test --
+    the client measures whether a datagram this large arrives at all.
+    """
+    body = max_datagram_size(packet_size) - _HEADER.size
+    if body < 0:
+        return None
+    return _header(0, c.GVSP_CONTENT_PAYLOAD, 0) + b"\x00" * body
+
+
 def next_frame_id(frame_id):
     """
     Frame ids are 16 bit, must strictly increase, and zero is not valid --

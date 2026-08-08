@@ -34,6 +34,13 @@ log = logging.getLogger(__name__)
 
 SEND_BUFFER_SIZE = 8 * 1024 * 1024
 
+# Linux socket options for the don't-fragment bit, from <linux/in.h>. Python's
+# socket module does not export these on every build, so they are spelled out
+# and applied defensively rather than imported.
+IP_MTU_DISCOVER = 10
+IP_PMTUDISC_DONT = 0
+IP_PMTUDISC_DO = 2
+
 
 class StreamChannel(object):
 
@@ -55,6 +62,7 @@ class StreamChannel(object):
         self.n_frames = 0
         self.n_packets = 0
         self.n_send_errors = 0
+        self.n_test_packets = 0
 
     # --- lifecycle -------------------------------------------------------
 
@@ -110,6 +118,63 @@ class StreamChannel(object):
         ip = "%d.%d.%d.%d" % ((address >> 24) & 0xFF, (address >> 16) & 0xFF,
                               (address >> 8) & 0xFF, address & 0xFF)
         return (ip, port)
+
+    def set_dont_fragment(self, on):
+        """
+        Ask the kernel to set (or clear) DF on this socket.
+
+        Not fatal if it fails: without it the emulator still streams, it just
+        cannot fail a client's oversized probe, so the client may settle on a
+        packet size the path has to fragment.
+        """
+        if self.socket is None:
+            return False
+        mode = IP_PMTUDISC_DO if on else IP_PMTUDISC_DONT
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IP, IP_MTU_DISCOVER, mode)
+            return True
+        except OSError as e:
+            log.debug("cannot set the don't fragment bit: %s", e)
+            return False
+
+    def send_test_packet(self, packet_size, do_not_fragment):
+        """
+        Answer a client's packet size probe with one packet of that exact size.
+
+        Called from the control thread, because the write that asks for it
+        arrives on the control channel. That is safe here only because a
+        client sizes its packets before it starts acquisition, so the stream
+        loop is parked in its idle poll and not touching the socket.
+
+        Returning False is a legitimate outcome, not just an error path: when
+        the client asks for more than the path carries and DF is set, the send
+        fails with EMSGSIZE and *that silence is the answer*. The client times
+        out, steps down a size, and tries again.
+        """
+        if self.socket is None:
+            return False
+        with self.lock:
+            target = self._stream_target()
+        if target is None:
+            log.warning("packet size probe arrived before the stream "
+                        "destination was set; nothing to answer it with")
+            return False
+
+        datagram = gvsp.test_packet(packet_size)
+        if datagram is None:
+            log.warning("packet size probe of %d bytes is too small to hold "
+                        "a GVSP header", packet_size)
+            return False
+
+        self.set_dont_fragment(do_not_fragment)
+        try:
+            self.socket.sendto(datagram, target)
+        except OSError as e:
+            log.debug("packet size probe of %d bytes not sent: %s",
+                      packet_size, e)
+            return False
+        self.n_test_packets += 1
+        return True
 
     def _snapshot(self):
         """

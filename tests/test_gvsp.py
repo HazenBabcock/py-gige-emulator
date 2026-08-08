@@ -132,3 +132,29 @@ def test_packet_size_too_small_is_refused():
     geo = geometry()
     with pytest.raises(ValueError):
         list(gvsp.packetize(b"\x00" * geo["payload"], 36, 1, geo, 0))
+
+
+@pytest.mark.parametrize("packet_size", [576, 1024, 1500, 8228, 9000])
+def test_a_test_packet_is_exactly_the_size_asked_for(packet_size):
+    """
+    The client measures the arriving datagram, so being one byte out makes it
+    settle on a packet size the device never agreed to.
+    """
+    datagram = gvsp.test_packet(packet_size)
+    assert len(datagram) == gvsp.max_datagram_size(packet_size)
+    # The IP and UDP headers the kernel adds bring it to the requested size.
+    assert len(datagram) + 28 == packet_size
+
+
+def test_a_test_packet_can_never_be_mistaken_for_a_frame():
+    """
+    Block id zero is what makes this safe: next_frame_id never emits it, so a
+    client that feeds this to its reassembler cannot attach it to a real
+    frame.
+    """
+    block_id = struct.unpack_from(">H", gvsp.test_packet(1500), 2)[0]
+    assert block_id == 0
+
+
+def test_a_test_packet_smaller_than_the_header_is_refused():
+    assert gvsp.test_packet(c.GVSP_PROTOCOL_OVERHEAD - 1) is None

@@ -159,6 +159,61 @@ def test_acquisition_stop_halts_the_stream(client, server):
         client.receive_frame(packet_size, timeout=1.0)
 
 
+def test_a_packet_size_probe_is_answered_at_the_requested_size(client, server):
+    """
+    A client sizes its receive path by asking the device to fire a packet of a
+    candidate size. Ignoring the request is not inert: every probe times out,
+    the client walks down and settles on the 576 byte minimum, which is what
+    ImpactAcquire was measured doing.
+    """
+    client.take_control()
+    packet_size = client.open_stream(packet_size=1400)
+    client.write_register(c.BS_SC0_PACKET_SIZE,
+                          c.SC_PACKET_SIZE_FIRE_TEST | packet_size)
+
+    data, _ = client.stream_socket.recvfrom(4096)
+    assert len(data) == packet_size - 28          # less the IP and UDP headers
+    assert server.stream.n_test_packets == 1
+
+
+def test_the_fire_bit_clears_but_the_size_survives(client, server):
+    """
+    The fire bit is a trigger, not state. Left set, a client reading the
+    register back sees a probe still pending; cleared along with everything
+    else, it loses the settings the stream is about to run with.
+    """
+    client.take_control()
+    client.open_stream(packet_size=1400)
+    client.write_register(
+        c.BS_SC0_PACKET_SIZE,
+        c.SC_PACKET_SIZE_FIRE_TEST | c.SC_PACKET_SIZE_DO_NOT_FRAGMENT | 1400)
+    client.stream_socket.recvfrom(4096)
+
+    value = client.read_register(c.BS_SC0_PACKET_SIZE)
+    assert not value & c.SC_PACKET_SIZE_FIRE_TEST
+    assert value & c.SC_PACKET_SIZE_DO_NOT_FRAGMENT
+    assert value & c.SC_PACKET_SIZE_MASK == 1400
+
+
+def test_a_probe_does_not_disturb_the_frames_that_follow(client, server):
+    """
+    The test packet goes out on the stream socket carrying a GVSP header, so
+    the risk is that it lands in the client's reassembler. Block id zero is
+    what keeps it out.
+    """
+    client.take_control()
+    packet_size = client.open_stream(packet_size=1400)
+    client.write_register(c.BS_SC0_PACKET_SIZE,
+                          c.SC_PACKET_SIZE_FIRE_TEST | packet_size)
+    client.stream_socket.recvfrom(4096)
+
+    features = server.camera.feature_set.by_name
+    client.write_register(features["AcquisitionStart"].address, 1)
+    block_id, _leader, data = client.receive_frame(packet_size)
+    assert block_id == 1
+    assert len(data) == server.camera.geometry["payload"]
+
+
 def test_a_command_register_self_clears(client, server):
     client.take_control()
     features = server.camera.feature_set.by_name

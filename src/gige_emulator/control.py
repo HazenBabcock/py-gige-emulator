@@ -27,13 +27,18 @@ log = logging.getLogger(__name__)
 class ControlChannel(object):
 
     def __init__(self, memory, lock, port=c.GVCP_PORT, bind_address="",
-                 on_control_change=None, bridge=None, interface=None):
+                 on_control_change=None, bridge=None, interface=None,
+                 on_test_packet=None):
         self.memory = memory
         self.lock = lock
         self.port = port
         self.bind_address = bind_address
         self.interface = interface
         self.on_control_change = on_control_change
+        # Called with (packet_size, do_not_fragment) when a client asks the
+        # device to fire a test packet. Wired to the stream channel, which is
+        # the only thing here holding a GVSP socket.
+        self.on_test_packet = on_test_packet
 
         # The bridge runs user code, so it is always called with the lock
         # released -- a slow camera must not be able to stall the stream
@@ -206,6 +211,10 @@ class ControlChannel(object):
             if self.bridge is not None:
                 for addr, value in pairs:
                     self.bridge.after_write(addr)
+            for addr, value in pairs:
+                if (addr == c.BS_SC0_PACKET_SIZE
+                        and value & c.SC_PACKET_SIZE_FIRE_TEST):
+                    self._fire_test_packet(value)
             return gvcp.encode_write_register_ack(command.packet_id, len(pairs))
 
         if cmd == c.CMD_READ_MEMORY:
@@ -236,6 +245,23 @@ class ControlChannel(object):
 
         raise MemoryError_("unimplemented command 0x%04x" % cmd,
                            c.ERROR_NOT_IMPLEMENTED)
+
+    def _fire_test_packet(self, value):
+        """
+        Honour a packet size probe: send one packet of the requested size.
+
+        The fire bit is a trigger rather than state, so it is cleared here --
+        a client that reads the register back must not see a test it already
+        asked for still pending. The size and the don't-fragment bit stay,
+        since those are the settings the stream will run with.
+        """
+        with self.lock:
+            self.memory.poke_register(c.BS_SC0_PACKET_SIZE,
+                                      value & ~c.SC_PACKET_SIZE_FIRE_TEST)
+        if self.on_test_packet is None:
+            return
+        self.on_test_packet(value & c.SC_PACKET_SIZE_MASK,
+                            bool(value & c.SC_PACKET_SIZE_DO_NOT_FRAGMENT))
 
     def _update_controller(self, address):
         """

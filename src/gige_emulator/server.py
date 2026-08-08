@@ -69,9 +69,15 @@ class GigECameraServer(object):
         self.control = ControlChannel(
             self.memory, self.lock, port=gvcp_port, bind_address=bind_address,
             bridge=self.bridge, on_control_change=self._on_control_change,
-            interface=interface)
+            interface=interface, on_test_packet=self._on_test_packet)
         self.stream = StreamChannel(camera, self.memory, self.lock, ip,
                                     control=self.control, interface=interface)
+
+    def _on_test_packet(self, packet_size, do_not_fragment):
+        # Bound late rather than passed as self.stream.send_test_packet,
+        # because the control channel is built before the stream channel
+        # exists.
+        self.stream.send_test_packet(packet_size, do_not_fragment)
 
     def _on_control_change(self, has_control):
         if not has_control:
@@ -121,6 +127,7 @@ class GigECameraServer(object):
             "command_errors": self.control.n_errors,
             "frames": self.stream.n_frames,
             "packets": self.stream.n_packets,
+            "test_packets": self.stream.n_test_packets,
             "send_errors": self.stream.n_send_errors,
             "has_control": self.control.has_control(),
             "acquiring": self.camera.acquiring,
