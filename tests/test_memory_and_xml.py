@@ -203,6 +203,37 @@ def test_the_built_in_features_use_standard_categories():
         assert feature.category in SFNC_CATEGORIES, feature.name
 
 
+def test_category_namespace_follows_where_the_name_came_from():
+    """
+    NameSpace says whether the *name* is the convention's or this device's
+    own, so a convention name declared Custom claims authorship of a name it
+    did not invent. No client checks, but it is backwards.
+    """
+    class Mixed(EmulatedCamera):
+        extra_features = (
+            IntFeature("GainRaw", "", "AnalogControl", "RW", default=1,
+                       min=1, max=22),
+            IntFeature("Ratio", "", "FRETControl", "RW", default=1,
+                       min=0, max=100),
+        )
+
+        def next_frame(self):
+            return b""
+
+    camera = Mixed(width=64, height=48, pixel_format="Mono8")
+    xml = genicam_xml.build_xml(camera.feature_set, "Mixed", "vendor")
+    root = ElementTree.fromstring(xml)
+    tag = root.tag[:root.tag.index("}") + 1]
+
+    spaces = {e.get("Name"): e.get("NameSpace")
+              for e in root.iter(tag + "Category")}
+    assert spaces["Root"] == "Standard"
+    assert spaces["AnalogControl"] == "Standard"
+    assert spaces["AcquisitionControl"] == "Standard"
+    # Invented, so it really is this device's own name.
+    assert spaces["FRETControl"] == "Custom"
+
+
 def test_exposure_and_gain_land_in_the_two_categories_people_confuse():
     """
     Pinning the case the docstring calls out: they are tuned together and

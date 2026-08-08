@@ -22,8 +22,8 @@
 import xml.etree.ElementTree as ElementTree
 from xml.sax.saxutils import escape
 
-from .features import (CommandFeature, EnumFeature, FloatFeature, IntFeature,
-                       StringFeature)
+from .features import (SFNC_CATEGORIES, CommandFeature, EnumFeature,
+                       FloatFeature, IntFeature, StringFeature)
 
 SCHEMA_NS = "http://www.genicam.org/GenApi/Version_1_0"
 
@@ -146,7 +146,14 @@ def build_xml(feature_set, model_name, vendor_name, tooltip=None):
     out.append("")
 
     for category in categories:
-        out.append('\t<Category Name="%s" NameSpace="Custom">' % category)
+        # NameSpace says where the *name* came from, so a category the naming
+        # convention defines is Standard and an invented one is Custom.
+        # Declaring a convention name as Custom is what this used to do, and
+        # it claims the name is this device's own -- harmless in practice,
+        # since no client checks, but it is exactly backwards.
+        namespace = ("Standard" if category in SFNC_CATEGORIES else "Custom")
+        out.append('\t<Category Name="%s" NameSpace="%s">'
+                   % (category, namespace))
         for feature in feature_set.features:
             if feature.category == category:
                 out.append("\t\t<pFeature>%s</pFeature>" % feature.name)
