@@ -115,6 +115,11 @@ class EmulatedCamera(object):
                                               c.PIXEL_FORMAT_NAMES[pixel_format]),
                        min=1, max=0xFFFFFFFF))
 
+        # SingleFrame is one frame per AcquisitionStart: the stream thread
+        # clears self.acquiring once it has sent one, so the client has to
+        # start again for the next. next_frame() sees no difference between
+        # the two modes -- it is asked for a frame and returns one either
+        # way -- so a camera needs to do nothing to support this.
         add(EnumFeature("AcquisitionMode", "Acquisition mode",
                         "AcquisitionControl", "RW",
                         entries={"Continuous": 1, "SingleFrame": 2},

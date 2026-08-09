@@ -194,6 +194,9 @@ will reconstruct.
   Genuine silence still releases it, which is the case that matters.
   `heartbeat_timeout_ms` (3000 by default) covers a client that goes quiet for
   a long time on purpose.
+* **`AcquisitionMode` is honoured.** `SingleFrame` delivers one frame per
+  `AcquisitionStart` and then stops, so a snapshot client starts again for
+  each one. Your `next_frame()` sees no difference between the two modes.
 * **Geometry is latched at `AcquisitionStart`.** The client sizes its buffer
   from `PayloadSize` and then drops any packet past the count that implies,
   with no error, so changing width mid-stream would produce black frames and

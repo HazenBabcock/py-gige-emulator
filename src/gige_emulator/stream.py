@@ -223,7 +223,8 @@ class StreamChannel(object):
             geometry = self.camera.geometry
             if geometry is None:
                 return None
-            return target, packet_size, packet_delay, geometry
+            mode = self.camera.settings.get("AcquisitionMode", "Continuous")
+            return target, packet_size, packet_delay, geometry, mode
 
     def _run(self):
         while self.running:
@@ -232,7 +233,7 @@ class StreamChannel(object):
                 time.sleep(self.idle_poll)
                 continue
 
-            target, packet_size, packet_delay, geometry = state
+            target, packet_size, packet_delay, geometry, mode = state
 
             if packet_size < 64 or packet_size > 65536:
                 log.warning("client asked for an unusable packet size %d",
@@ -261,6 +262,18 @@ class StreamChannel(object):
                 continue
 
             self._send_frame(frame, target, packet_size, packet_delay, geometry)
+
+            # One frame per AcquisitionStart, and the send is over either
+            # way. Stopping only on a successful send would turn a camera
+            # that keeps returning the wrong number of bytes into a
+            # continuous stream of dropped frames, which is the one outcome
+            # the client cannot distinguish from the device ignoring the
+            # mode entirely. It asked for one frame; it gets one attempt,
+            # and a timeout if that attempt failed.
+            if mode == "SingleFrame":
+                with self.lock:
+                    self.camera.acquiring = False
+                log.info("single frame delivered, acquisition stopped")
 
     def _send_frame(self, frame, target, packet_size, packet_delay, geometry):
         if isinstance(frame, Frame):

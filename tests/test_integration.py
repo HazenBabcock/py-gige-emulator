@@ -240,6 +240,65 @@ def test_acquisition_stop_halts_the_stream(client, server):
         client.receive_frame(packet_size, timeout=1.0)
 
 
+def test_single_frame_mode_delivers_one_frame_and_stops(client, server):
+    """
+    The mode was advertised and never read, so a client selecting it got a
+    continuous stream -- a wrong answer rather than a missing feature, and
+    one it cannot tell from the device ignoring the request.
+    """
+    features = server.camera.feature_set.by_name
+    client.take_control()
+    client.write_register(features["AcquisitionMode"].address, 2)
+    assert server.camera.settings["AcquisitionMode"] == "SingleFrame"
+
+    packet_size = client.open_stream()
+    client.write_register(features["AcquisitionStart"].address, 1)
+    client.receive_frame(packet_size)
+
+    # The stream thread clears this once the frame is out, so give it the
+    # one poll interval it needs rather than racing the assertion.
+    deadline = time.monotonic() + 2.0
+    while server.camera.acquiring and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not server.camera.acquiring
+    assert server.stats["frames"] == 1
+
+    with pytest.raises(FakeClientError):
+        client.receive_frame(packet_size, timeout=1.0)
+
+
+def test_single_frame_mode_can_be_started_again(client, server):
+    """
+    Stopping after one frame must leave the device startable, not merely
+    idle -- a snapshot client takes many single frames in a row.
+    """
+    features = server.camera.feature_set.by_name
+    client.take_control()
+    client.write_register(features["AcquisitionMode"].address, 2)
+    packet_size = client.open_stream()
+
+    for expected in (1, 2, 3):
+        client.write_register(features["AcquisitionStart"].address, 1)
+        client.receive_frame(packet_size)
+        deadline = time.monotonic() + 2.0
+        while server.camera.acquiring and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert server.stats["frames"] == expected
+
+
+def test_continuous_mode_is_unaffected(client, server):
+    features = server.camera.feature_set.by_name
+    client.take_control()
+    assert server.camera.settings["AcquisitionMode"] == "Continuous"
+
+    packet_size = client.open_stream()
+    client.write_register(features["AcquisitionStart"].address, 1)
+    for _ in range(3):
+        client.receive_frame(packet_size)
+    assert server.camera.acquiring
+    client.write_register(features["AcquisitionStop"].address, 1)
+
+
 def test_a_packet_size_probe_is_answered_at_the_requested_size(client, server):
     """
     A client sizes its receive path by asking the device to fire a packet of a
