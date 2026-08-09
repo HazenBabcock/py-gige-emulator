@@ -9,7 +9,7 @@ import pytest
 
 from fakeclient import FakeClient, FakeClientError
 from gige_emulator import (EmulatedCamera, FloatFeature, GigECameraServer,
-                           IntFeature)
+                           IntFeature, StringFeature)
 from gige_emulator import constants as c
 from gige_emulator import stream as stream_module
 
@@ -546,6 +546,45 @@ def test_a_payload_feature_republishes_the_geometry(client, server):
     # registers must have followed without anyone writing them.
     assert client.read_register(width.address) == WIDTH // 2
     assert client.read_register(payload.address) == (WIDTH // 2) * (HEIGHT // 2)
+
+
+def test_a_string_feature_round_trips_through_write_memory():
+    """
+    A string register is the one feature type a client can never reach with
+    WRITE_REGISTER -- four bytes will not carry it -- so it exercises the
+    memory path end to end, which is exactly why the bridge keys on
+    (address, length) rather than on the GVCP command.
+    """
+    class NamedCamera(PatternCamera):
+        extra_features = PatternCamera.extra_features + (
+            StringFeature("DeviceUserID", "User programmable id",
+                          "DeviceControl", "RW", default="bench-left",
+                          length=16),
+        )
+
+    camera = NamedCamera(width=8, height=8, pixel_format="Mono8")
+    srv = GigECameraServer(camera, ip="127.0.0.1", netmask="255.0.0.0",
+                           model_name="PatternCam", serial_number="TEST-1",
+                           gvcp_port=PORT + 4, bind_address="127.0.0.1")
+    srv.start()
+    try:
+        with FakeClient(("127.0.0.1", PORT + 4)) as named:
+            named.take_control()
+            feature = camera.feature_set.by_name["DeviceUserID"]
+
+            raw = named.read_memory(feature.address, feature.size)
+            assert raw.split(b"\x00", 1)[0] == b"bench-left"
+
+            named.write_memory(feature.address, feature.encode("bench-right"))
+            assert camera.settings["DeviceUserID"] == "bench-right"
+            # The hook has to fire for a string exactly as it does for an
+            # integer; a camera cannot act on a name it is never told about.
+            assert {"DeviceUserID": "bench-right"} in camera.applied
+
+            raw = named.read_memory(feature.address, feature.size)
+            assert raw.split(b"\x00", 1)[0] == b"bench-right"
+    finally:
+        srv.stop()
 
 
 def test_a_read_only_feature_is_refused(client, server):

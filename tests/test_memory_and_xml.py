@@ -8,7 +8,8 @@ from gige_emulator import bootstrap, genicam_xml
 from gige_emulator import constants as c
 from gige_emulator.camera import EmulatedCamera
 from gige_emulator.features import (SFNC_CATEGORIES, EnumFeature, FeatureError,
-                                    FeatureSet, FloatFeature, IntFeature)
+                                    FeatureSet, FloatFeature, IntFeature,
+                                    StringFeature)
 from gige_emulator.memory import DeviceMemory, MemoryError_
 
 
@@ -344,6 +345,55 @@ def test_a_refused_enumeration_says_what_the_choices_were():
         feature.validate(12345)
     assert "Mono8" in str(excinfo.value)
     assert str(0x01080001) in str(excinfo.value)
+
+
+def test_a_string_register_is_padded_to_its_full_length():
+    """
+    The register is a fixed window, so a short value has to fill it. Leaving
+    the tail untouched would serve whatever the previous value left there.
+    """
+    feature = StringFeature("DeviceUserID", length=16)
+    raw = feature.encode("bench-left")
+    assert len(raw) == 16
+    assert raw == b"bench-left" + b"\x00" * 6
+    assert feature.decode(raw) == "bench-left"
+
+
+def test_an_oversized_string_keeps_its_terminator():
+    """
+    Truncating to the full length rather than length - 1 would fill the
+    window with no NUL in it, and a client reading a string register scans
+    for one -- so it would run on into whatever feature was allocated next.
+    """
+    feature = StringFeature("DeviceUserID", length=16)
+    raw = feature.encode("a-name-far-too-long-for-sixteen")
+    assert len(raw) == 16
+    assert raw.endswith(b"\x00")
+    assert len(feature.decode(raw)) == 15
+
+
+def test_a_string_feature_is_allocated_and_declared_at_one_address():
+    """
+    A StringReg is both the feature node and its register, unlike an Integer
+    with a separate IntReg behind it, so there is only one address and the
+    XML has to agree with the allocator about it.
+    """
+    features = FeatureSet()
+    features.add(IntFeature("Width", default=640))
+    string = features.add(StringFeature("DeviceUserID", length=16))
+    assert string.size == 16
+    assert features.lookup_address(string.address) is string
+
+    xml = genicam_xml.build_xml(features, "Model", "Vendor")
+    assert genicam_xml.validate_xml(xml, features) == []
+
+    root = ElementTree.fromstring(xml)
+    tag = "{%s}" % genicam_xml.SCHEMA_NS
+    nodes = [e for e in root.iter(tag + "StringReg")
+             if e.get("Name") == "DeviceUserID"]
+    assert len(nodes) == 1
+    assert int(nodes[0].find(tag + "Address").text, 0) == string.address
+    assert int(nodes[0].find(tag + "Length").text) == 16
 
 
 def test_payload_size_matches_the_geometry():
