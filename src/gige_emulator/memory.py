@@ -6,13 +6,18 @@
 # is mapped read only just above the register space, and camera features sit
 # wherever the feature allocator puts them.
 #
-# This module is also where the user's settings hooks are dispatched from,
-# and that placement is load bearing. It is tempting to fire the hooks from
-# the GVCP command handler instead, on WRITE_REGISTER and READ_REGISTER --
-# but the client only uses those commands for 4 byte accesses on a schema
-# older than 1.1.0 (arvgcport.c, _use_legacy_endianness_mechanism). An 8 byte
-# float or a string register always arrives as READ_MEMORY. Dispatching on
-# (address, length) here catches every path.
+# Two tiers of access, and the split is not stylistic. read() and write() are
+# what a client's GVCP command reaches: they bounds check, and write()
+# refuses anything touching the XML region. peek_*() and poke_*() are the
+# device's own path and skip both checks -- which is what lets the server
+# publish into a register the client is not allowed to move, the stream
+# source port and every feature the XML declares read only being the cases
+# that matter.
+#
+# Nothing here calls into the camera. A register access that has to become a
+# settings call is turned into one by FeatureBridge, which the control
+# channel invokes either side of the access; bridge.py records why that
+# dispatch keys on (address, length) rather than on the GVCP command.
 #
 
 import struct
@@ -34,17 +39,6 @@ class DeviceMemory(object):
         self._mem = bytearray(size)
         self._size = size
         self._xml = b""
-
-        # Installed by the server once features exist. Both are optional so
-        # that the memory layer stays testable on its own.
-        #
-        # on_read(address, length) is called before a read is served, and may
-        # write into memory to refresh what is about to be returned.
-        #
-        # on_write(address, data) is called after a write lands. Raising
-        # MemoryError_ from it rolls the write back.
-        self.on_read = None
-        self.on_write = None
 
     # --- the XML blob ----------------------------------------------------
 
@@ -90,8 +84,6 @@ class DeviceMemory(object):
     def read(self, address, length):
         if address < 0 or length < 0:
             raise MemoryError_("negative address or length", c.ERROR_INVALID_PARAMETER)
-        if self.on_read is not None:
-            self.on_read(address, length)
         return self._read_raw(address, length)
 
     def write(self, address, data):
@@ -104,14 +96,7 @@ class DeviceMemory(object):
             raise MemoryError_("write crosses into read only memory",
                                c.ERROR_WRITE_PROTECT)
 
-        previous = bytes(self._mem[address:end])
         self._mem[address:end] = data
-        if self.on_write is not None:
-            try:
-                self.on_write(address, bytes(data))
-            except Exception:
-                self._mem[address:end] = previous
-                raise
 
     # --- convenience -----------------------------------------------------
 
