@@ -10,9 +10,11 @@
 #
 
 import argparse
+import collections
 import logging
 import os
 import sys
+import time
 
 import cv2
 
@@ -115,10 +117,28 @@ class OpenCvCamera(EmulatedCamera):
         self.exposure_scale = exposure_scale
         self.n_grab_failures = 0
 
+        # When each of the last few frames arrived, for the measured rate
+        # reported below. Bounded because the interesting rate is the one the
+        # camera is running at now, not its average since it was opened.
+        self._arrivals = collections.deque(maxlen=self.RATE_WINDOW)
+
         super().__init__(width=actual_width, height=actual_height,
                          pixel_format=pixel_format,
                          pixel_formats=["Mono8", "RGB8"],
                          frame_rate=frame_rate, **kwds)
+
+        # The frame rate is not ours to set. A UVC camera advertises one
+        # discrete frame interval per format and size -- this webcam offers
+        # YUYV 640x480 at 30 and nothing else, and YUYV 1920x1080 at 5 and
+        # nothing else -- so the rate is a consequence of the mode rather
+        # than a control, and cap.set(CAP_PROP_FPS, x) duly returns False for
+        # every x. Declaring it writable let a client set any value it liked
+        # and be told the write succeeded, since nothing ever read the rate
+        # back off the camera.
+        #
+        # Wired here rather than in the core because it is not true of
+        # cameras in general: the Pi example's rate really is writable.
+        self.feature_set.by_name["AcquisitionFrameRate"].access = "RO"
 
     def close(self):
         if self.cap is not None:
@@ -136,6 +156,8 @@ class OpenCvCamera(EmulatedCamera):
         if not ok:
             self.n_grab_failures += 1
             return None      # the stream thread simply tries again
+
+        self._note_arrival(time.monotonic())
 
         # OpenCV hands back BGR. Mono8 wants one byte per pixel and RGB8
         # wants R, G, B in that order, so neither is the raw buffer.
@@ -163,19 +185,68 @@ class OpenCvCamera(EmulatedCamera):
             if not self.cap.set(cv2.CAP_PROP_GAIN, float(changed["GainRaw"])):
                 log.warning("camera refused gain %d", changed["GainRaw"])
 
-        if "AcquisitionFrameRate" in changed:
-            # The rate belongs to the camera, not to a timer in the emulator
-            # -- cap.read() blocking at whatever rate the camera settles on
-            # is what paces the stream.
-            rate = float(changed["AcquisitionFrameRate"])
-            if not self.cap.set(cv2.CAP_PROP_FPS, rate):
-                log.warning("camera refused frame rate %g", rate)
+        # AcquisitionFrameRate is deliberately absent: it is read only, so
+        # this hook is never called for it. The rate belongs to the camera --
+        # cap.read() blocking at whatever rate it settles on is what paces
+        # the stream.
+
+    #: Frames the measured rate averages over. Long enough not to jump about
+    #: on one slow read, short enough to follow a rate that has genuinely
+    #: changed -- at 30 fps this is half a second of history.
+    RATE_WINDOW = 15
+
+    #: A gap this many times the rate we have been seeing is taken as the
+    #: stream having stopped rather than as one slow frame. Relative rather
+    #: than a flat number of seconds, so it means the same thing to a 30 fps
+    #: webcam and to a camera running at one frame every two seconds.
+    RATE_GAP = 5.0
+
+    def _note_arrival(self, now):
+        """
+        Record when a frame arrived, forgetting the history across a stop.
+
+        Without this a client that stops acquiring and comes back a minute
+        later gets that minute averaged in as a frame interval, and is told
+        the camera runs at 0.02 fps until the window refills. Snapping does
+        exactly that -- every snap is its own start and stop.
+        """
+        rate = self.measured_frame_rate()
+        if rate is not None and (now - self._arrivals[-1]) > self.RATE_GAP / rate:
+            self._arrivals.clear()
+        self._arrivals.append(now)
+
+    def measured_frame_rate(self):
+        """
+        The rate frames are actually arriving at, or the camera's nominal one
+        until enough have.
+
+        Worth the arithmetic because the nominal figure is not just imprecise
+        but wrong: this webcam reports CAP_PROP_FPS 30.0 while delivering
+        15.9, auto-exposure having doubled the frame time in indoor light.
+        Publishing 30 would misreport the camera by a factor of two, and hide
+        the one thing about the rate a client can still influence -- shorten
+        the exposure and the rate comes back up.
+        """
+        if len(self._arrivals) < 2:
+            return None
+        span = self._arrivals[-1] - self._arrivals[0]
+        if span <= 0:
+            return None
+        return (len(self._arrivals) - 1) / span
 
     def get_camera_settings(self):
-        return {
+        out = {
             "ExposureTime": self.cap.get(cv2.CAP_PROP_EXPOSURE) * self.exposure_scale,
             "GainRaw": int(self.cap.get(cv2.CAP_PROP_GAIN)),
         }
+        # Left at whatever was last measured when the stream is stopped,
+        # rather than reset. A stopped camera has no rate, and the last one
+        # it ran at is the more useful answer than either zero or the
+        # nominal figure.
+        rate = self.measured_frame_rate()
+        if rate is not None:
+            out["AcquisitionFrameRate"] = rate
+        return out
 
 
 if __name__ == "__main__":
