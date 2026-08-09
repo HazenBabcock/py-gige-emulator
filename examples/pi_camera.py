@@ -140,6 +140,69 @@ def binning_factors(sensor_modes, full_size):
     return factors or [1]
 
 
+def mode_label(mode):
+    return "%dx%d/%s" % (mode["size"][0], mode["size"][1],
+                         str(mode.get("format")))
+
+
+def unpacked_format(name):
+    """
+    The unpacked spelling of a sensor format.
+
+    The sensor advertises its 10 and 12 bit modes only as _CSI2P, and asking
+    for those on a Pi 5 returns BGGR_PISP_COMP1 -- a PiSP-compressed layout
+    with no GenICam equivalent, so the raw Bayer option disappears and only
+    RGB8 is left. Asking for the unpacked name instead selects the *same*
+    sensor readout and delivers SBGGR16, which does have one: requesting
+    SRGGB12 measured 101.8 fps against the 101.68 the packed mode
+    advertises. So the depth is kept and the format stays labelable.
+    """
+    # str() because picamera2 hands back a SensorFormat object here, not a
+    # plain string, and it has no string methods.
+    name = str(name)
+    return name[:-len("_CSI2P")] if name.endswith("_CSI2P") else name
+
+
+def parse_mode(text, sensor_modes):
+    """
+    Resolve --mode against the sensor's own mode list.
+
+    The format is part of the selection, not decoration. libcamera picks the
+    sensor readout from it, and on an IMX477 at 1332x990 that is 147.8 fps
+    for SRGGB8 against 101.8 for SRGGB12 -- measured, and matching the fps
+    the mode list advertises. Taking only the size threw that away and always
+    ran at the slowest depth.
+
+    Accepts WIDTHxHEIGHT, which picks the deepest mode of that size, or
+    WIDTHxHEIGHT/FORMAT for an exact one.
+    """
+    size, _, wanted = text.partition("/")
+    try:
+        width, height = (int(v) for v in size.lower().split("x"))
+    except ValueError:
+        raise ValueError("expected WIDTHxHEIGHT or WIDTHxHEIGHT/FORMAT, "
+                         "got %r" % text)
+
+    matches = [m for m in sensor_modes if tuple(m["size"]) == (width, height)]
+    if not matches:
+        raise ValueError("no %dx%d mode; this sensor offers %s"
+                         % (width, height,
+                            ", ".join(sorted({mode_label(m)
+                                              for m in sensor_modes}))))
+    if wanted:
+        exact = [m for m in matches
+                 if str(m.get("format", "")).lower() == wanted.lower()]
+        if not exact:
+            raise ValueError("no %s mode at %dx%d; that size offers %s"
+                             % (wanted, width, height,
+                                ", ".join(mode_label(m) for m in matches)))
+        return exact[0]
+
+    # Deepest by default: a client can always ask for less precision, but it
+    # cannot recover what a shallower readout threw away.
+    return max(matches, key=lambda m: m.get("bit_depth") or 0)
+
+
 class _FrameSink(Output):
     """
     Picamera2 hands encoded frames here. We keep only the most recent one --
@@ -515,15 +578,18 @@ if __name__ == "__main__":
     if args.list_modes:
         # Unlike OpenCV, libcamera reports its modes directly.
         picam2 = Picamera2()
-        print("sensor modes:")
+        print("sensor modes (pass one of these to --mode):")
         for mode in picam2.sensor_modes:
-            print("  %-12s %-10s bit_depth=%s fps=%s"
-                  % ("%dx%d" % mode["size"], mode.get("format"),
-                     mode.get("bit_depth"), mode.get("fps")))
+            print("  %-26s bit_depth=%-3s max_fps=%s"
+                  % (mode_label(mode), mode.get("bit_depth"),
+                     mode.get("fps")))
         picam2.close()
-        print("\nSelect one with --mode WIDTHxHEIGHT, or let a client pick a "
-              "binned\nsize at runtime -- see the note at the top of this "
-              "file about what\nbinning really means here.")
+        print("\nThe format is not decoration -- it picks the sensor readout, "
+              "and the\nshallower ones are markedly faster. Giving --mode a "
+              "bare WIDTHxHEIGHT\nselects the deepest mode of that size.\n"
+              "\nA client can also pick a binned size at runtime; see the "
+              "note at the\ntop of this file about what binning really means "
+              "here.")
         sys.exit(0)
 
     # Check the interface before opening the camera, so a typo fails with a
@@ -534,22 +600,35 @@ if __name__ == "__main__":
         parser.error(str(e))
 
     width, height = args.width, args.height
+    raw_format = None
     if args.mode is not None:
+        probe = Picamera2()
         try:
-            width, height = (int(v) for v in args.mode.lower().split("x"))
-        except ValueError:
-            parser.error("--mode wants WIDTHxHEIGHT, e.g. 2028x1520")
+            chosen = parse_mode(args.mode, probe.sensor_modes)
+        except ValueError as e:
+            parser.error("--mode: %s" % e)
+        finally:
+            probe.close()
+        width, height = chosen["size"]
+        raw_format = unpacked_format(chosen["format"])
+        log.info("mode %s -> requesting %s (bit_depth %s, sensor max %s fps)",
+                 mode_label(chosen), raw_format, chosen.get("bit_depth"),
+                 chosen.get("fps"))
 
-    camera = PiCamera(width=width, height=height, frame_rate=args.frame_rate)
+    kwds = {"raw_format": raw_format} if raw_format else {}
+    camera = PiCamera(width=width, height=height, frame_rate=args.frame_rate,
+                      **kwds)
     camera.start()
 
     server = GigECameraServer(camera, interface=args.interface,
                               model_name="PiHQ", serial_number="PI-0001",
                               user_defined_name=args.name,
                               packet_size=args.packet_size)
-    print("serving %dx%d Mono16 (%.1f MB/frame), ctrl-c to exit."
+    print("serving %dx%d %s (%.1f MB/frame), ctrl-c to exit.\n"
+          "pixel formats offered: %s"
           % (camera.settings["Width"], camera.settings["Height"],
-             camera.payload_size() / 1e6))
+             camera.settings["PixelFormat"], camera.payload_size() / 1e6,
+             ", ".join(camera.feature_set.by_name["PixelFormat"].entries)))
     try:
         server.serve_forever()
     finally:
