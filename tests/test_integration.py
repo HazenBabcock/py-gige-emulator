@@ -336,6 +336,15 @@ def test_a_resent_packet_completes_the_frame_byte_for_byte(client, server):
             index = candidate
             break
     assert index is not None, "reassembled frame matches no generated pattern"
+    # Waited for rather than sampled. resend() runs on the control thread and
+    # adds to this counter after its send loop, while the client returns the
+    # instant the last resent packet lands -- so reading it once here races
+    # the increment and reports 0 for a frame that was demonstrably repaired,
+    # which is the contradiction the assertion above rules out. Failed on
+    # 3.13 in CI and about one run in seven locally.
+    deadline = time.monotonic() + 2.0
+    while server.stats["resent_packets"] < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert server.stats["resent_packets"] >= 2
     client.write_register(
         camera.feature_set.by_name["AcquisitionStop"].address, 1)
