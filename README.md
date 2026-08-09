@@ -63,13 +63,62 @@ register 0x00e8). Clients index it, so it is how you select one of two
 otherwise identical cameras without typing the full
 `vendor-model-serial` device id.
 
+`opencv_camera.py` and `pi_camera.py` also take `--list-modes` and
+`--mode`, since both sit on hardware that offers a fixed set:
+
+```
+$ python examples/pi_camera.py --list-modes
+  1332x990/SRGGB8            bit_depth=8    max_fps=147.91
+  2028x1520/SRGGB12_CSI2P    bit_depth=12   max_fps=45.19
+  ...
+$ python examples/pi_camera.py --interface eth0 --mode 1332x990/SRGGB8
+```
+
+For the Pi the format is part of the selection, not decoration — libcamera
+picks the sensor readout from it, and the shallower ones are markedly faster.
+At 1332x990 that is a measured 147.8 fps against 101.8. A bare `WIDTHxHEIGHT`
+takes the deepest readout of that size. A webcam has no equivalent, so
+`opencv_camera.py` takes a size alone.
+
 `noise_camera.py` needs nothing but Python and is the quickest way to check the
 emulator reaches your client. `opencv_camera.py` serves a UVC webcam and shows
 the settings hooks driving real hardware, including reading back what the
 camera actually did with a request. `pi_camera.py` serves an IMX477 over
-libcamera/Picamera2 at 4056x3040 Mono16, and shows passing the sensor's own
-frame number and timestamp through so a gap in the client's frame ids means a
-frame the pipeline genuinely dropped.
+libcamera/Picamera2, and shows passing the sensor's own frame number and
+timestamp through so a gap in the client's frame ids means a frame the
+pipeline genuinely dropped.
+
+#### Pixel formats ####
+
+Declare what a camera can deliver with `pixel_formats`, and the client picks:
+
+```python
+camera = MyCamera(width=640, height=480,
+                  pixel_format="Mono8", pixel_formats=["Mono8", "Mono16"])
+```
+
+`PixelFormat` is writable when that list holds more than one entry and
+read-only when it does not, so a camera with one format says so rather than
+accepting a write that changes nothing. `PayloadSize` follows automatically —
+your `next_frame()` only has to return `self.geometry["payload"]` bytes of
+whatever is currently selected. It is payload-affecting, so a client cannot
+change it mid-acquisition.
+
+Mono8/10/12/16, RGB8, BGR8 and the twelve Bayer layouts (`BayerRG8`,
+`BayerBG16`, …) are recognised. **A colour sensor's raw output is Bayer, and
+calling it Mono is not a harmless approximation** — the client renders a
+checkerboard and has no way to know there is colour to recover. The two
+letters are the top-left 2x2 phase, and they change with sensor rotation, so
+read them from whatever your camera reports rather than assuming: the Pi HQ
+camera's sensor is RGGB, but it reports a 180° rotation and libcamera hands
+back `SBGGR16` accordingly, so hardcoding the sensor's phase would swap the
+client's red and blue.
+
+`pi_camera.py` shows the whole pattern. It offers `RGB8` from the ISP's
+demosaiced stream and the raw Bayer layout it detects at startup, and
+switching between them reconfigures the sensor. RGB8 is the default: the ISP
+demosaics with the sensor's own tuning file, which beats anything a client
+will reconstruct.
 
 #### Design notes ####
 
