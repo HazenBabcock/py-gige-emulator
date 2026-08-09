@@ -1,0 +1,55 @@
+#
+# The loopback suite is the only automatic check this project has. Everything
+# it verifies -- packet layout, register offsets, the control handshake -- is
+# invisible until a client refuses to stream, and the clients it was written
+# against cannot run here, so this needs to run on every push.
+#
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    # Linux only, and not as a default. netif.py imports fcntl at module
+    # scope and __init__.py imports netif, so the package does not import at
+    # all on Windows; the ioctl numbers and SO_BINDTODEVICE are Linux
+    # specific besides. Testing anywhere else would be testing a
+    # configuration the project does not claim to support.
+    runs-on: ubuntu-latest
+
+    # No suite in the tree should take a minute, but the stream channel runs
+    # a thread whose stop() deliberately does not wait for an exposure. A
+    # hang here should cost ten minutes, not the six hour default.
+    timeout-minutes: 10
+
+    strategy:
+      # One version failing must not cancel the rest: whether a break is on
+      # every version or only the newest is most of the diagnosis.
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Installed rather than run off PYTHONPATH, which would also work, so
+      # that the packaging metadata is exercised too -- a pyproject.toml that
+      # no longer builds then fails here instead of on someone's first
+      # `pip install`. The test extra pulls in numpy, which is a real
+      # dependency of the suite: test_pi_modes.py imports the Pi example,
+      # and while picamera2 is stubbed there, the numpy import is not.
+      - name: Install
+        run: pip install -e ".[test]"
+
+      # testpaths in pyproject.toml points at tests/, which is what keeps the
+      # examples out of collection -- importing them needs cv2 and picamera2.
+      - name: Test
+        run: python -m pytest -q
