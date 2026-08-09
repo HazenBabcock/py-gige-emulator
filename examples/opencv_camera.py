@@ -186,6 +186,19 @@ if __name__ == "__main__":
                         help="user-defined camera name. Clients show this and "
                              "can select on it, so it is how you tell two "
                              "otherwise identical cameras apart")
+    parser.add_argument("--vendor", default="py-gige-emulator",
+                        help="vendor name, the first part of the device id. "
+                             "A few real vendor names are refused because "
+                             "clients apply per-vendor workarounds to them")
+    parser.add_argument("--model", default="OpenCV",
+                        help="model name. With the vendor and serial this "
+                             "forms the device id a client lists, so two "
+                             "otherwise identical cameras need different "
+                             "ones here or in --serial")
+    parser.add_argument("--serial", default="CV-0001",
+                        help="serial number. Part of the device id, and the "
+                             "usual thing to vary between two of the same "
+                             "camera; some clients pin it in their config")
     parser.add_argument("--device", type=int, default=0,
                         help="OpenCV device index")
     parser.add_argument("--list-modes", action="store_true",
@@ -234,10 +247,14 @@ if __name__ == "__main__":
                           pixel_format=args.pixel_format,
                           exposure_scale=args.exposure_scale)
 
-    server = GigECameraServer(camera, interface=args.interface,
-                              model_name="OpenCV", serial_number="CV-0001",
-                              user_defined_name=args.name,
-                              packet_size=args.packet_size)
+    try:
+        server = GigECameraServer(camera, interface=args.interface,
+                                  vendor_name=args.vendor, model_name=args.model,
+                                  serial_number=args.serial,
+                                  user_defined_name=args.name,
+                                  packet_size=args.packet_size)
+    except ValueError as e:
+        parser.error(str(e))
     print("serving %dx%d %s, ctrl-c to exit."
           % (camera.settings["Width"], camera.settings["Height"],
              camera.settings["PixelFormat"]))

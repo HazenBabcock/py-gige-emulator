@@ -63,6 +63,16 @@ register 0x00e8). Clients index it, so it is how you select one of two
 otherwise identical cameras without typing the full
 `vendor-model-serial` device id.
 
+That device id is separately settable with `--vendor`, `--model` and
+`--serial`, and it is what a client *lists* — `--name` does not appear there.
+So two of the same camera need different ids, and a client that pins one in
+its configuration needs the id to match:
+
+```
+$ python examples/pi_camera.py --interface eth0 --serial GV01
+INFO ... listening on 192.168.1.225:3956 as py-gige-emulator-PiHQ-GV01
+```
+
 `opencv_camera.py` and `pi_camera.py` also take `--list-modes` and
 `--mode`, since both sit on hardware that offers a fixed set:
 

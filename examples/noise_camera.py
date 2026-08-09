@@ -68,6 +68,19 @@ if __name__ == "__main__":
                         help="user-defined camera name. Clients show this and "
                              "can select on it, so it is how you tell two "
                              "otherwise identical cameras apart")
+    parser.add_argument("--vendor", default="py-gige-emulator",
+                        help="vendor name, the first part of the device id. "
+                             "A few real vendor names are refused because "
+                             "clients apply per-vendor workarounds to them")
+    parser.add_argument("--model", default="PyNoise",
+                        help="model name. With the vendor and serial this "
+                             "forms the device id a client lists, so two "
+                             "otherwise identical cameras need different "
+                             "ones here or in --serial")
+    parser.add_argument("--serial", default="PY-0001",
+                        help="serial number. Part of the device id, and the "
+                             "usual thing to vary between two of the same "
+                             "camera; some clients pin it in their config")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--pixel-format", default="Mono8")
@@ -91,10 +104,14 @@ if __name__ == "__main__":
                          pixel_formats=["Mono8", "Mono16"],
                          frame_rate=args.frame_rate)
 
-    server = GigECameraServer(camera, interface=args.interface,
-                              model_name="PyNoise", serial_number="PY-0001",
-                              user_defined_name=args.name,
-                              packet_size=args.packet_size)
+    try:
+        server = GigECameraServer(camera, interface=args.interface,
+                                  vendor_name=args.vendor, model_name=args.model,
+                                  serial_number=args.serial,
+                                  user_defined_name=args.name,
+                                  packet_size=args.packet_size)
+    except ValueError as e:
+        parser.error(str(e))
     print("ctrl-c to exit.")
     try:
         server.serve_forever()
