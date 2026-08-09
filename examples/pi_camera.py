@@ -283,8 +283,14 @@ class PiCamera(EmulatedCamera):
                    affects_payload=True, default=1, min=1, max=MAX_BINNING),
     )
 
+    #: --pixel-format aliases. The Bayer layout's name depends on the
+    #: sensor's rotation and is only known once the camera is open, so
+    #: "raw" is the only way to ask for it from a command line without
+    #: running --list-modes first and reading it off.
+    PIXEL_FORMAT_ALIASES = {"rgb": "RGB8", "raw": None, "bayer": None}
+
     def __init__(self, width=4056, height=3040, frame_rate=10.0,
-                 raw_format="SRGGB12", **kwds):
+                 raw_format="SRGGB12", pixel_format="RGB8", **kwds):
 
         self.picam2 = Picamera2()
         self.full_width = width
@@ -314,10 +320,26 @@ class PiCamera(EmulatedCamera):
         # colour camera expects to see. Raw Bayer stays available for anyone
         # doing their own processing.
         formats = ["RGB8"] + ([self.bayer_format] if self.bayer_format else [])
-        self._applied_pixel_format = None
-        self._configure(width, height, "RGB8")
 
-        super().__init__(width=width, height=height, pixel_format="RGB8",
+        if pixel_format.lower() in self.PIXEL_FORMAT_ALIASES:
+            # "raw" resolves to whatever layout this sensor turned out to
+            # have, which is the point of the alias.
+            resolved = self.PIXEL_FORMAT_ALIASES[pixel_format.lower()]
+            pixel_format = resolved or self.bayer_format
+            if pixel_format is None:
+                raise ValueError(
+                    "this pipeline delivers %r, which has no GenICam Bayer "
+                    "equivalent, so only RGB8 is available"
+                    % str(raw_actual["format"]))
+        if pixel_format not in formats:
+            raise ValueError("unknown pixel format %r; this camera offers %s"
+                             % (pixel_format, ", ".join(formats)))
+
+        self._applied_pixel_format = None
+        self._configure(width, height, pixel_format)
+
+        super().__init__(width=width, height=height,
+                         pixel_format=pixel_format,
                          pixel_formats=formats, frame_rate=frame_rate,
                          **kwds)
 
@@ -578,6 +600,12 @@ if __name__ == "__main__":
                         help="frame size as WIDTHxHEIGHT, e.g. 2028x1520")
     parser.add_argument("--width", type=int, default=4056)
     parser.add_argument("--height", type=int, default=3040)
+    parser.add_argument("--pixel-format", default="RGB8",
+                        help="what the client receives: RGB8 (the ISP's "
+                             "demosaiced output), or 'raw' for this sensor's "
+                             "Bayer layout, whose exact name depends on the "
+                             "rotation. Not the same thing as --mode, which "
+                             "picks the sensor readout")
     parser.add_argument("--frame-rate", type=float, default=10.0)
     parser.add_argument("--packet-size", type=int, default=1400,
                         help="raise this with the MTU if you have jumbo frames")
@@ -598,10 +626,16 @@ if __name__ == "__main__":
         picam2.close()
         print("\nThe format is not decoration -- it picks the sensor readout, "
               "and the\nshallower ones are markedly faster. Giving --mode a "
-              "bare WIDTHxHEIGHT\nselects the deepest mode of that size.\n"
-              "\nA client can also pick a binned size at runtime; see the "
-              "note at the\ntop of this file about what binning really means "
-              "here.")
+              "bare WIDTHxHEIGHT\nselects the deepest mode of that size.")
+        print("\nThese SRGGB names are sensor formats, and they are NOT what "
+              "the client\nreceives. That is --pixel-format, which takes "
+              "RGB8 (the default, the ISP's\ndemosaiced output) or 'raw' for "
+              "this sensor's Bayer layout. The two are\nindependent: --mode "
+              "chooses how the sensor is read, --pixel-format chooses\nwhat "
+              "is sent.")
+        print("\nA client can also pick a binned size at runtime, and switch "
+              "pixel format\nwhile stopped; see the note at the top of this "
+              "file about what binning\nreally means here.")
         sys.exit(0)
 
     # Check the interface before opening the camera, so a typo fails with a
@@ -628,8 +662,12 @@ if __name__ == "__main__":
                  chosen.get("fps"))
 
     kwds = {"raw_format": raw_format} if raw_format else {}
-    camera = PiCamera(width=width, height=height, frame_rate=args.frame_rate,
-                      **kwds)
+    try:
+        camera = PiCamera(width=width, height=height,
+                          frame_rate=args.frame_rate,
+                          pixel_format=args.pixel_format, **kwds)
+    except ValueError as e:
+        parser.error("--pixel-format: %s" % e)
     camera.start()
 
     server = GigECameraServer(camera, interface=args.interface,

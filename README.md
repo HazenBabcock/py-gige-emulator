@@ -80,6 +80,20 @@ At 1332x990 that is a measured 147.8 fps against 101.8. A bare `WIDTHxHEIGHT`
 takes the deepest readout of that size. A webcam has no equivalent, so
 `opencv_camera.py` takes a size alone.
 
+**`--mode` and `--pixel-format` are independent**, which is the easy thing to
+trip over. `--mode` chooses how the *sensor* is read — those are the `SRGGB…`
+names, and none of them is what goes on the wire. `--pixel-format` chooses
+what the *client* receives:
+
+```
+$ python examples/pi_camera.py --interface eth0 --mode 2028x1520 --pixel-format raw
+```
+
+`raw` is spelled that way on purpose: the Bayer layout's name depends on the
+sensor's rotation, so it is not knowable until the camera is open. The exact
+name works too once `--list-modes` or the startup line has told you what it
+is.
+
 `noise_camera.py` needs nothing but Python and is the quickest way to check the
 emulator reaches your client. `opencv_camera.py` serves a UVC webcam and shows
 the settings hooks driving real hardware, including reading back what the
