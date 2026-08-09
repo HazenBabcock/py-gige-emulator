@@ -24,7 +24,8 @@ class GigECameraServer(object):
                  serial_number="PY-0001", user_defined_name="",
                  gvcp_port=c.GVCP_PORT, bind_address="",
                  packet_size=c.DEFAULT_PACKET_SIZE,
-                 heartbeat_timeout_ms=3000, validate=True):
+                 heartbeat_timeout_ms=3000, validate=True,
+                 compress_xml=True):
 
         if interface is not None:
             ip, netmask, mac = netif.interface_info(interface)
@@ -47,14 +48,34 @@ class GigECameraServer(object):
                 raise ValueError("generated GenICam XML is not usable:\n  "
                                  + "\n  ".join(problems))
 
-        xml_size = self.memory.set_genicam_xml(self.xml)
+        # The URL's filename is what tells the client whether to inflate, so
+        # the name and the blob have to be decided together.
+        xml_filename = "%s.xml" % model_name.lower()
+        self.xml_blob = self.xml
+        if compress_xml:
+            packed = genicam_xml.zip_xml(self.xml, xml_filename)
+            # Only if it actually helps. A blob that grew would also be
+            # unreadable rather than merely pointless: the client decides an
+            # entry is compressed by comparing the two sizes in the central
+            # directory, so deflate output that did not shrink gets copied
+            # out raw. An archive is its entry plus about 120 bytes of
+            # headers, so this one test covers both.
+            if len(packed) < len(self.xml):
+                self.xml_blob = packed
+                xml_filename += ".zip"
+            else:
+                log.debug("genicam xml does not compress usefully (%d -> %d "
+                          "bytes); serving it as is", len(self.xml),
+                          len(packed))
+
+        xml_size = self.memory.set_genicam_xml(self.xml_blob)
 
         self.info = bootstrap.DeviceInfo(
             ip=ip, netmask=netmask or "255.255.255.0",
             mac=mac or b"\x00" * 6,
             manufacturer_name=vendor_name, model_name=model_name,
             serial_number=serial_number, user_defined_name=user_defined_name,
-            xml_filename="%s.xml" % model_name.lower(),
+            xml_filename=xml_filename,
             heartbeat_timeout_ms=heartbeat_timeout_ms,
             packet_size=packet_size)
         bootstrap.init_bootstrap(self.memory, self.info, xml_size)

@@ -17,8 +17,10 @@
 #
 import argparse
 import ctypes
+import io
 import sys
 import xml.etree.ElementTree as ElementTree
+import zipfile
 
 # --- GenTL enums ---------------------------------------------------------
 
@@ -210,12 +212,12 @@ def fetch_xml(g, port):
     if url is None:
         raise GenTLError("GCGetPortURL failed: %s" % g.last_error())
     url = url.split("\x00", 1)[0]
-    if url.lower().startswith("file:") or ".zip" in url.lower():
-        raise GenTLError("XML is not a plain in-device blob: %r" % url)
+    if url.lower().startswith("file:"):
+        raise GenTLError("XML is not an in-device blob: %r" % url)
     # Some producers append a query -- ImpactAcquire hands back
     # '...;10000;19e5?SchemaVersion=0.0.0' -- so strip it before parsing the
     # length, or the int() blows up on the suffix.
-    _, address, length = url.split("?", 1)[0].rsplit(";", 2)
+    path, address, length = url.split("?", 1)[0].rsplit(";", 2)
     address, length = int(address, 16), int(length, 16)
 
     out = bytearray()
@@ -229,7 +231,14 @@ def fetch_xml(g, port):
             raise GenTLError("GCReadPort returned nothing at 0x%x"
                              % (address + len(out)))
         out += buf.raw[:size.value]
-    return url, bytes(out[:length])
+
+    blob = bytes(out[:length])
+    # Most real cameras ship the XML zipped, since the client reads it 512
+    # bytes at a time. The filename in the URL is what says so.
+    if path.lower().endswith(".zip"):
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            blob = archive.read(archive.namelist()[0])
+    return url, blob
 
 
 def _namespace(root):

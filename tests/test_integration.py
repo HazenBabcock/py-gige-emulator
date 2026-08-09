@@ -133,6 +133,57 @@ def test_the_genicam_xml_downloads_and_parses(client, server):
     assert root.get("ModelName") == "PatternCam"
 
 
+def test_the_xml_is_served_zipped_and_the_url_says_so(client, server):
+    """
+    The client reads the blob in fixed 512 byte chunks, so what the download
+    costs is round trips. Compressing it is most of the time it takes to
+    open a camera on a slow link -- measured at 16 chunks against 3 on the
+    Pi example, out of 28 round trips for the whole open.
+
+    The filename is the only thing that tells the client to inflate, so the
+    two have to be checked together: a .zip url over plain xml, or the other
+    way round, is a device that opens nowhere.
+    """
+    url, xml = client.fetch_genicam_xml()
+    path = url.rsplit(";", 2)[0]
+    assert path.endswith(".xml.zip")
+    assert server.xml_blob != server.xml
+    assert server.xml_blob.startswith(b"PK\x03\x04")
+
+    # And the size in the url is the blob's, not the xml's -- the client
+    # reads exactly that many bytes before trying to inflate them.
+    size = int(url.rsplit(";", 1)[1], 16)
+    assert size == len(server.xml_blob)
+    assert xml == server.xml
+
+
+def test_the_served_blob_is_never_larger_than_the_xml(server):
+    assert len(server.xml_blob) <= len(server.xml)
+
+
+def test_xml_compression_can_be_turned_off(server):
+    """
+    Kept as an escape hatch for a client that cannot inflate. Nothing in
+    the standard makes it optional, but this device exists to be pointed at
+    clients that turn out to be strange.
+    """
+    camera = PatternCamera(width=8, height=8, pixel_format="Mono8")
+    srv = GigECameraServer(camera, ip="127.0.0.1", netmask="255.0.0.0",
+                           model_name="PatternCam", serial_number="TEST-1",
+                           gvcp_port=PORT + 3, bind_address="127.0.0.1",
+                           compress_xml=False)
+    srv.start()
+    try:
+        with FakeClient(("127.0.0.1", PORT + 3)) as plain:
+            url, xml = plain.fetch_genicam_xml()
+        assert url.rsplit(";", 2)[0].endswith(".xml")
+        assert not url.rsplit(";", 2)[0].endswith(".zip")
+        assert srv.xml_blob == srv.xml
+        assert xml == srv.xml
+    finally:
+        srv.stop()
+
+
 def test_control_is_taken_and_released(client, server):
     assert not server.control.has_control()
     client.take_control()

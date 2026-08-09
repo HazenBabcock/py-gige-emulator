@@ -150,6 +150,17 @@ will reconstruct.
   written. The register map and the XML come from the same source, so they
   cannot drift — an `<Address>` that disagrees with what the device stores
   fails in a way that looks like a client bug.
+* **The XML is served zipped**, as real cameras do, and the URL's `.xml.zip`
+  filename is what tells the client to inflate it. Clients read the blob in
+  fixed 512 byte chunks — Aravis hardcodes that — so the download costs one
+  round trip per 512 bytes no matter how fast the link is, and a typical
+  feature set is 8 kB of XML that deflates to under 1.5 kB. That is 16 round
+  trips against 3, out of about 28 for the whole open. Invisible on a fast
+  link and most of the wait on a slow one. Pass `compress_xml=False` if you
+  meet a client that cannot inflate; the device also falls back on its own if
+  the archive would not be smaller, because a client decides an entry is
+  compressed by comparing the two stored sizes and would copy non-shrinking
+  deflate output out raw.
 * **Two threads.** Control and streaming are separate because `next_frame()`
   is a real camera grab. A one second exposure on a single thread would
   block GVCP past the client's command timeout and cost you control
@@ -234,6 +245,30 @@ Note the register is device state that outlives the client that set it: once a
 probing client has negotiated 1488, a later non-probing client sees 1488 too.
 That makes back-to-back measurements easy to misread — restart the emulator
 between them.
+
+#### Slow to open ####
+
+If a client takes seconds to open the camera while the device is answering
+promptly, suspect the route before the device. Opening is round trip bound —
+about 28 commands, over half of them the XML download — so a link with a
+100 ms round trip turns a 15 ms open into three seconds.
+
+The trap is two interfaces on one subnet. A client broadcasts discovery from
+**every** interface it has; if your wired and wireless interfaces are both on,
+say, `192.168.1.0/24`, the wireless broadcast still reaches the camera over
+the wired segment, the camera answers it, and the client may keep that
+answer and run the whole session over WiFi. Measured here: 0.44 ms round trip
+over ethernet, 37 ms over WiFi to the same camera.
+
+`--interface` does not help, and cannot: it restricts which of the *device's*
+interfaces answer, which it does — verified by capturing each one — but the
+duplicate is on the client's side, and a request arriving on the permitted
+interface from a host on that subnet is indistinguishable from any other. A
+real camera behaves the same way. Give the camera its own subnet.
+
+To tell the two apart, capture at the device and look at which side the gaps
+are on. Time between a request arriving and the answer going out is the
+device; time between an answer and the next request is the link.
 
 #### Tests ####
 

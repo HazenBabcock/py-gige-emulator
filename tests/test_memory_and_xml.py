@@ -376,3 +376,61 @@ def test_the_schema_is_1_0_1():
     assert root.get("SchemaMajorVersion") == "1"
     assert root.get("SchemaMinorVersion") == "0"
     assert root.get("SchemaSubMinorVersion") == "1"
+
+
+# --- the zipped XML blob -------------------------------------------------
+
+def test_the_zipped_xml_round_trips():
+    camera = DummyCamera()
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy", "test-vendor")
+    blob = genicam_xml.zip_xml(xml, "dummy.xml")
+    assert genicam_xml.unzip_xml(blob) == xml
+
+
+def test_the_archive_holds_exactly_one_entry():
+    """
+    The client asks for the first name it finds and inflates that one, so a
+    second entry is at best ignored and at worst the one it picks.
+    """
+    import io
+    import zipfile
+    blob = genicam_xml.zip_xml(b"<x/>", "dummy.xml")
+    with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+        assert archive.namelist() == ["dummy.xml"]
+
+
+def test_the_same_feature_set_always_zips_to_the_same_bytes():
+    """
+    The entry's timestamp is pinned. Left to the clock, the blob's length
+    would wander and with it the size in the XML url.
+    """
+    camera = DummyCamera()
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy", "test-vendor")
+    assert genicam_xml.zip_xml(xml, "d.xml") == genicam_xml.zip_xml(xml, "d.xml")
+
+
+def test_zipping_saves_most_of_the_download_round_trips():
+    """
+    The client reads the blob 512 bytes at a time and cannot be told to read
+    more, so what the download costs is chunks, not bytes.
+    """
+    camera = DummyCamera()
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy", "test-vendor")
+    blob = genicam_xml.zip_xml(xml, "dummy.xml")
+    plain_chunks = -(-len(xml) // 512)
+    zipped_chunks = -(-len(blob) // 512)
+    assert plain_chunks >= 8
+    assert zipped_chunks * 3 < plain_chunks
+
+
+def test_deflate_that_does_not_shrink_makes_a_bigger_archive():
+    """
+    Documents why the server compares the two sizes before serving the
+    archive. The client decides an entry is compressed by comparing the
+    stored sizes, so deflate output that grew would be copied out raw and
+    parsed as garbage -- and an archive is its entry plus about 120 bytes of
+    headers, so "the archive got smaller" is exactly the right test.
+    """
+    import random
+    incompressible = random.Random(20250808).randbytes(4096)
+    assert len(genicam_xml.zip_xml(incompressible, "x")) > len(incompressible)

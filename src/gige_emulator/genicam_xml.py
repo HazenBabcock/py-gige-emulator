@@ -19,7 +19,9 @@
 # is tested against.
 #
 
+import io
 import xml.etree.ElementTree as ElementTree
+import zipfile
 from xml.sax.saxutils import escape
 
 from .features import (SFNC_CATEGORIES, SFNC_ENUM_ENTRIES,
@@ -187,6 +189,42 @@ def build_xml(feature_set, model_name, vendor_name, tooltip=None):
     out.append("")
 
     return "\n".join(out).encode("utf-8")
+
+
+def zip_xml(xml_bytes, filename):
+    """
+    Pack the XML into a one entry zip archive, which is what the URL points
+    at when compression is on.
+
+    The client reads the blob in 512 byte chunks -- Aravis hardcodes that at
+    ARV_GVCP_DATA_SIZE_MAX -- so the download costs one round trip per 512
+    bytes however fast the link is. A typical feature set is around 8 kB of
+    XML and deflates to under 1.5 kB, turning 16 round trips into 3. On a
+    fast link that is invisible; on a slow one it is most of the time it
+    takes to open the camera, because opening is round trip bound rather
+    than bandwidth bound.
+
+    Exactly one entry, because the client takes the first name in the
+    archive and asks for that one back -- Aravis prepends as it walks the
+    central directory, so with several files it would get the last.
+    """
+    buffer = io.BytesIO()
+    # A fixed timestamp so the same feature set always produces the same
+    # bytes; nothing reads it, and a blob that changed size between runs
+    # would make the memory map depend on the clock.
+    entry = zipfile.ZipInfo(filename, date_time=(1980, 1, 1, 0, 0, 0))
+    entry.compress_type = zipfile.ZIP_DEFLATED
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(entry, xml_bytes, compresslevel=9)
+    return buffer.getvalue()
+
+
+def unzip_xml(blob):
+    """
+    The inverse, for a client. Returns the first entry's contents.
+    """
+    with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+        return archive.read(archive.namelist()[0])
 
 
 def validate_xml(xml_bytes, feature_set):

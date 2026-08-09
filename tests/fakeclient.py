@@ -13,7 +13,7 @@ import struct
 import time
 
 from gige_emulator import constants as c
-from gige_emulator import gvcp
+from gige_emulator import genicam_xml, gvcp
 
 
 class FakeClientError(Exception):
@@ -128,7 +128,12 @@ class FakeClient(object):
         if not url.lower().startswith("local:"):
             raise FakeClientError("unsupported XML url %r" % url)
         path, address, size = url.rsplit(";", 2)
-        return url, self.read_memory(int(address, 16), int(size, 16))
+        blob = self.read_memory(int(address, 16), int(size, 16))
+        # The filename is the only thing that says whether the blob is an
+        # archive, which is how every GenICam client decides.
+        if path.lower().endswith(".zip"):
+            blob = genicam_xml.unzip_xml(blob)
+        return url, blob
 
     def take_control(self):
         self.write_register(c.BS_CONTROL_CHANNEL_PRIVILEGE, c.CCP_CONTROL)
