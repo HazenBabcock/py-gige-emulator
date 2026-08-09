@@ -2,6 +2,7 @@
 # End to end over loopback, with no Aravis and no second machine.
 #
 
+import logging
 import struct
 import time
 import xml.etree.ElementTree as ElementTree
@@ -403,6 +404,30 @@ def test_restarting_delivers_a_fresh_frame_not_the_retained_one(client, server):
         "restart replayed frame %s; expected something newer than %s"
         % (index_after, index_before))
     client.write_register(stop, 1)
+
+
+def test_a_refused_write_says_what_and_who(client, server, caplog):
+    """
+    The reply is an error ack, which a client need not put in front of
+    anyone -- arv-viewer does not. Without a line here, a control whose
+    changes quietly do nothing is indistinguishable from a write that never
+    left the client, and the device is the only thing that knows.
+
+    The holder is the useful half: "not the controller" says this client was
+    refused, not that some other one -- often forgotten and still open -- is
+    the reason.
+    """
+    client.take_control()
+    feature = server.camera.feature_set.by_name["ExposureTime"]
+
+    with FakeClient(("127.0.0.1", PORT)) as intruder:
+        with caplog.at_level(logging.WARNING, logger="gige_emulator.control"):
+            with pytest.raises(FakeClientError) as excinfo:
+                intruder.write_memory(feature.address,
+                                      struct.pack(">d", 25000.0))
+    assert excinfo.value.error == c.ERROR_ACCESS_DENIED
+    assert "ExposureTime" in caplog.text
+    assert "control is held by" in caplog.text
 
 
 def test_a_resend_larger_than_the_frame_can_afford_is_refused_whole(client,

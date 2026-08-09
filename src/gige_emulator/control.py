@@ -187,6 +187,15 @@ class ControlChannel(object):
             reply = self._dispatch(command, address, write_access)
         except MemoryError_ as e:
             self.n_errors += 1
+            # Say so. A refused write is otherwise invisible from the device:
+            # the reply is an error ack the client may not put in front of
+            # anyone -- arv-viewer does not -- and nothing reaches the log,
+            # because the refusal happens here, before the feature layer that
+            # does the logging. What that leaves is a control whose changes
+            # quietly do nothing, indistinguishable from a write that never
+            # arrived, which is the wrong question to be left holding.
+            log.warning("refused command 0x%04x from %s: %s",
+                        command.command, address, e)
             return gvcp.encode_error(command.command + 1, command.packet_id,
                                      e.gvcp_error)
         except gvcp.MalformedPacket:
@@ -231,9 +240,10 @@ class ControlChannel(object):
             return gvcp.encode_read_register_ack(command.packet_id, values)
 
         if cmd == c.CMD_WRITE_REGISTER:
-            if not write_access:
-                raise MemoryError_("not the controller", c.ERROR_ACCESS_DENIED)
             pairs = gvcp.decode_write_register(command.payload)
+            if not write_access:
+                raise MemoryError_(self._denied([a for a, _ in pairs]),
+                                   c.ERROR_ACCESS_DENIED)
             with self.lock:
                 for addr, value in pairs:
                     self.memory.write_register(addr, value)
@@ -257,9 +267,10 @@ class ControlChannel(object):
             return gvcp.encode_read_memory_ack(command.packet_id, addr, data)
 
         if cmd == c.CMD_WRITE_MEMORY:
-            if not write_access:
-                raise MemoryError_("not the controller", c.ERROR_ACCESS_DENIED)
             addr, payload = gvcp.decode_write_memory(command.payload)
+            if not write_access:
+                raise MemoryError_(self._denied([addr]),
+                                   c.ERROR_ACCESS_DENIED)
             with self.lock:
                 self.memory.write(addr, payload)
             if self.bridge is not None:
@@ -280,6 +291,30 @@ class ControlChannel(object):
 
         raise MemoryError_("unimplemented command 0x%04x" % cmd,
                            c.ERROR_NOT_IMPLEMENTED)
+
+    def _feature_name(self, address):
+        """The feature at an address, for a message a person has to act on."""
+        if self.bridge is not None:
+            feature = self.bridge.features.lookup_address(address)
+            if feature is not None:
+                return feature.name
+        return "0x%x" % address
+
+    def _denied(self, addresses):
+        """
+        Why a write was refused, naming what was being written and who is
+        holding the channel.
+
+        The holder is the useful half. "Not the controller" says a client is
+        being refused; it does not say that some other client -- often one
+        the user has forgotten is still open -- is the reason, which is the
+        thing that has to change for the write to succeed.
+        """
+        with self.lock:
+            controller = self.controller
+        return ("write to %s refused: control is held by %s"
+                % (", ".join(self._feature_name(a) for a in addresses),
+                   controller if controller is not None else "nobody"))
 
     def _fire_test_packet(self, value):
         """
