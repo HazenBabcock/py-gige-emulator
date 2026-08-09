@@ -725,7 +725,14 @@ class PiCamera(EmulatedCamera):
                 # change compares against it rather than against a request
                 # that has been overtaken.
                 self._requested_rate = rate
-            self._note_requested("AcquisitionFrameRate", rate)
+                # Inside the conflict, because only a rate this branch
+                # actually changed is pending. Noting it unconditionally
+                # would report the requested rate back for the next couple
+                # of seconds even when the sensor is running at something
+                # else entirely -- and, since `rate` is only bound here,
+                # would raise UnboundLocalError on every exposure write that
+                # the current rate already accommodates.
+                self._note_requested("AcquisitionFrameRate", rate)
 
         if "Gain" in changed:
             controls["AnalogueGain"] = db_to_gain(changed["Gain"])
@@ -756,7 +763,8 @@ class PiCamera(EmulatedCamera):
                 exposure_us = int(1e6 / rate)
                 controls["ExposureTime"] = exposure_us
                 self._requested_exposure_us = float(exposure_us)
-            self._note_requested("ExposureTime", exposure_us)
+                # Inside the conflict; see the exposure branch above.
+                self._note_requested("ExposureTime", exposure_us)
 
         if controls:
             log.info("applying %s", controls)

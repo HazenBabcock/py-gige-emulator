@@ -158,3 +158,66 @@ def test_a_value_the_sensor_refuses_surfaces_in_the_end():
 def test_an_unrequested_feature_is_reported_as_measured():
     cam = _settings_stub()
     assert cam._reported("Gain", 6.0) == 6.0
+
+
+# --- the exposure / frame rate constraint --------------------------------
+#
+# Both directions, and both sides of the conflict. The no-conflict cases are
+# here because they are the ones that broke: the cross-clamp binds its
+# variable inside the conflict, so a write that needed no clamping raised
+# UnboundLocalError before set_controls() ran and applied *nothing*. That is
+# also the ordinary case -- the bench only ever exercised writes large enough
+# to conflict, which took the working path.
+
+
+class _FakePicam2(object):
+
+    def __init__(self):
+        self.controls = None
+
+    def set_controls(self, controls):
+        self.controls = dict(controls)
+
+
+def _constraint_stub(exposure_us, rate):
+    cam = _settings_stub()
+    cam.picam2 = _FakePicam2()
+    cam._requested_exposure_us = float(exposure_us)
+    cam._requested_rate = float(rate)
+    return cam
+
+
+def test_an_exposure_the_rate_allows_is_applied_alone():
+    # 10 fps needs 100 ms per frame and the exposure asks for 20, so there is
+    # nothing to resolve and the rate must be left alone.
+    cam = _constraint_stub(exposure_us=5000, rate=10.0)
+    cam.set_camera_settings({"ExposureTime": 20000})
+    assert cam.picam2.controls == {"ExposureTime": 20000}
+    assert cam._requested_rate == 10.0
+    # And the rate is not claimed as pending, so it keeps reading back as
+    # whatever the sensor is actually achieving.
+    assert "AcquisitionFrameRate" not in cam._pending
+
+
+def test_an_exposure_longer_than_the_frame_drags_the_rate_down():
+    cam = _constraint_stub(exposure_us=5000, rate=10.0)
+    cam.set_camera_settings({"ExposureTime": 500000})
+    assert cam.picam2.controls == {"ExposureTime": 500000, "FrameRate": 2.0}
+    assert cam._requested_rate == 2.0
+    assert cam._pending["AcquisitionFrameRate"][0] == 2.0
+
+
+def test_a_rate_the_exposure_allows_is_applied_alone():
+    cam = _constraint_stub(exposure_us=20000, rate=2.0)
+    cam.set_camera_settings({"AcquisitionFrameRate": 10.0})
+    assert cam.picam2.controls == {"FrameRate": 10.0}
+    assert cam._requested_exposure_us == 20000.0
+    assert "ExposureTime" not in cam._pending
+
+
+def test_a_rate_faster_than_the_exposure_shortens_it():
+    cam = _constraint_stub(exposure_us=500000, rate=2.0)
+    cam.set_camera_settings({"AcquisitionFrameRate": 10.0})
+    assert cam.picam2.controls == {"FrameRate": 10.0, "ExposureTime": 100000}
+    assert cam._requested_exposure_us == 100000.0
+    assert cam._pending["ExposureTime"][0] == 100000.0
