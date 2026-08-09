@@ -409,6 +409,10 @@ class PiCamera(EmulatedCamera):
         self._metadata = {}
         self._metadata_lock = threading.Lock()
         self._metadata_thread = None
+        # Waited on rather than slept through, so close() can end the loop
+        # promptly instead of it spinning on a flag it only checks every
+        # 200 ms.
+        self._metadata_stop = threading.Event()
 
         # What the camera is actually configured for, tracked separately from
         # settings["BinningHorizontal"]. The emulator updates self.settings
@@ -537,34 +541,64 @@ class PiCamera(EmulatedCamera):
         self.picam2.start_encoder(self.encoder, self.sink)
         self.started = True
         if self._metadata_thread is None:
+            self._metadata_stop.clear()
             self._metadata_thread = threading.Thread(
                 target=self._refresh_metadata, name="pi-metadata", daemon=True)
             self._metadata_thread.start()
 
     def close(self):
+        # The metadata thread goes first, and is waited for, because it holds
+        # a request while it is inside capture_metadata(). Tearing the camera
+        # down around it leaves picamera2's DMA allocator with exported
+        # pointers it cannot release:
+        #
+        #   BufferError: cannot close exported pointers exist
+        #
+        # raised from DmaAllocator.__del__ at interpreter exit. A __del__
+        # that raises leaves the object un-freed, so the process never goes
+        # away and keeps /dev/media0 -- and the next run fails with "Camera
+        # __init__ sequence did not complete", which points at the new
+        # process rather than the old one that is still holding the sensor.
         self.started = False
+        self._metadata_stop.set()
+        thread = self._metadata_thread
+        if thread is not None:
+            thread.join(timeout=3.0)
+            if thread.is_alive():
+                log.warning("metadata thread has not come back from "
+                            "capture_metadata(); the sensor may not be "
+                            "released cleanly")
+            self._metadata_thread = None
+
         if self.picam2 is not None:
             try:
                 self.picam2.stop_encoder()
                 self.picam2.stop()
             except Exception:
                 log.exception("error stopping the camera")
+            try:
+                # Explicitly, while the order is still ours to choose.
+                # Leaving it to __del__ is what put the teardown after
+                # interpreter shutdown had already begun.
+                self.picam2.close()
+            except Exception:
+                log.exception("error closing the camera")
 
     def _refresh_metadata(self):
-        while True:
+        while not self._metadata_stop.is_set():
             if not self.started:
-                time.sleep(0.2)
+                self._metadata_stop.wait(0.2)
                 continue
             try:
                 metadata = self.picam2.capture_metadata()
             except Exception:
-                time.sleep(0.5)
+                self._metadata_stop.wait(0.5)
                 continue
             with self._metadata_lock:
                 self._metadata = metadata
             # No need to keep up with the frame rate; the client only reads
             # these when a user is looking at them.
-            time.sleep(0.5)
+            self._metadata_stop.wait(0.5)
 
     def _apply_controls(self):
         """
