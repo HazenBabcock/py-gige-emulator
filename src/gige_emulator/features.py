@@ -219,9 +219,28 @@ class EnumFeature(Feature):
         return value
 
     def validate(self, value):
-        if isinstance(value, str) and value not in self.entries:
-            raise FeatureError("%s: %r is not a valid entry" % (self.name, value))
-        return value
+        """
+        Normalise to the entry name, which is what the rest of the device
+        assumes an enumeration setting holds -- payload_size() looks the
+        pixel format up by name, so an ordinal stored here surfaces as a
+        KeyError raised from inside refresh_geometry(), nowhere near the
+        write that caused it.
+
+        decode() already resolves a known ordinal to its name, so an integer
+        reaching here from a client write is by definition not one of the
+        entries. get_camera_settings() may legitimately hand one back,
+        though, so ordinals are translated rather than refused outright.
+        """
+        if not isinstance(value, str):
+            for name, entry in self.entries.items():
+                if entry == value:
+                    return name
+        elif value in self.entries:
+            return value
+        raise FeatureError("%s: %r is not one of %s"
+                           % (self.name, value,
+                              ", ".join("%s (%d)" % pair
+                                        for pair in self.entries.items())))
 
 
 @dataclass

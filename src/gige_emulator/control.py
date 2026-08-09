@@ -190,6 +190,19 @@ class ControlChannel(object):
             self.n_errors += 1
             return gvcp.encode_error(command.command + 1, command.packet_id,
                                      c.ERROR_INVALID_PARAMETER)
+        except Exception:
+            # Anything arriving here is a bug in the device rather than a
+            # request it is entitled to refuse -- but the client still has to
+            # be answered. Letting it fall through to the socket loop's
+            # handler sends nothing at all, and silence is the one failure a
+            # client cannot attribute: it burns its full retry budget and
+            # then reports a timeout, which points at the network rather than
+            # at the device that actually failed. The traceback is logged
+            # here, so answering hides nothing.
+            self.n_errors += 1
+            log.exception("dispatching command 0x%04x failed", command.command)
+            return gvcp.encode_error(command.command + 1, command.packet_id,
+                                     c.ERROR_GENERIC)
 
         self._update_controller(address)
         return reply

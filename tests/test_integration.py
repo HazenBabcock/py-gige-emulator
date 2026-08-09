@@ -387,6 +387,62 @@ def test_pixel_format_is_writable_when_there_is_a_choice(client, server):
     assert client.read_register(payload.address) == WIDTH * HEIGHT * 2
 
 
+def test_a_bogus_pixel_format_is_refused_and_leaves_the_device_working(
+        client, server):
+    """
+    An ordinal outside the enumeration used to be stored as-is, and every
+    later call that looked the format up by name then raised a KeyError --
+    including latch_geometry(), so the camera could no longer start at all.
+    The write has to be refused at the point it arrives.
+
+    The error code is checked rather than just the failure, because the
+    failure this replaces was a *timeout*: the exception escaped the handler,
+    nothing was sent, and the client gave up after its retries. Both raise
+    FakeClientError, and only the status byte tells them apart.
+    """
+    camera = server.camera
+    pixel_format = camera.feature_set.by_name["PixelFormat"]
+    client.take_control()
+
+    with pytest.raises(FakeClientError) as excinfo:
+        client.write_register(pixel_format.address, 12345)
+    assert excinfo.value.error == c.ERROR_INVALID_PARAMETER
+
+    assert camera.settings["PixelFormat"] == "Mono8"
+    assert client.read_register(pixel_format.address) == c.PIXEL_FORMAT_MONO8
+
+    # The half that actually regressed: the device still works afterwards.
+    packet_size = client.open_stream()
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStart"].address, 1)
+    block_id, leader, data = client.receive_frame(packet_size)
+    assert leader["pixel_format"] == c.PIXEL_FORMAT_MONO8
+    assert len(data) == WIDTH * HEIGHT
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStop"].address, 1)
+
+
+def test_a_device_side_bug_is_answered_rather_than_ignored(client, server,
+                                                           monkeypatch):
+    """
+    A handler that raises something the dispatcher does not expect must still
+    produce an ack. Sending nothing makes the client burn its retry budget
+    and report a timeout, which reads as a network fault and sends whoever is
+    debugging it to the wrong side of the link.
+    """
+    def boom():
+        raise RuntimeError("simulated device bug")
+
+    monkeypatch.setattr(server.bridge, "refresh_geometry", boom)
+    client.take_control()
+
+    with pytest.raises(FakeClientError) as excinfo:
+        client.write_register(
+            server.camera.feature_set.by_name["PixelFormat"].address,
+            c.PIXEL_FORMAT_MONO16)
+    assert excinfo.value.error == c.ERROR_GENERIC
+
+
 def test_switching_pixel_format_changes_the_frames_that_follow(client, server):
     camera = server.camera
     client.take_control()

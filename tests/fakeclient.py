@@ -17,7 +17,15 @@ from gige_emulator import genicam_xml, gvcp
 
 
 class FakeClientError(Exception):
-    pass
+
+    def __init__(self, message, error=None):
+        super().__init__(message)
+        #: The GEV status byte from an error ack, or None when the device
+        #: never answered at all. A test that only checks the exception type
+        #: cannot tell those apart, and they have opposite causes: a status
+        #: byte is the device refusing on purpose, silence is the device
+        #: broken.
+        self.error = error
 
 
 class FakeClient(object):
@@ -64,7 +72,8 @@ class FakeClient(object):
                 gvcp.HEADER.unpack_from(reply)
             if packet_type == c.PACKET_TYPE_ERROR:
                 raise FakeClientError("device returned error 0x%02x for "
-                                      "command 0x%04x" % (flags, command))
+                                      "command 0x%04x" % (flags, command),
+                                      error=flags)
             if ack_command == expect_ack and ack_id == packet_id:
                 return reply[8:]
         raise FakeClientError("no answer to command 0x%04x" % command)

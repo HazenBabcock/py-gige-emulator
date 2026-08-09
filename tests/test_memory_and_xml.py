@@ -7,8 +7,8 @@ import pytest
 from gige_emulator import bootstrap, genicam_xml
 from gige_emulator import constants as c
 from gige_emulator.camera import EmulatedCamera
-from gige_emulator.features import (SFNC_CATEGORIES, FeatureError, FeatureSet,
-                                    FloatFeature, IntFeature)
+from gige_emulator.features import (SFNC_CATEGORIES, EnumFeature, FeatureError,
+                                    FeatureSet, FloatFeature, IntFeature)
 from gige_emulator.memory import DeviceMemory, MemoryError_
 
 
@@ -309,6 +309,41 @@ def test_duplicate_feature_names_are_refused():
     features.add(IntFeature("Width"))
     with pytest.raises(FeatureError):
         features.add(IntFeature("Width"))
+
+
+def test_an_enumeration_stores_the_entry_name_not_the_ordinal():
+    """
+    Everything downstream looks an enumeration up by name -- payload_size()
+    indexes PIXEL_FORMAT_NAMES with it -- so an ordinal that reached the
+    settings dict would only surface much later, as a KeyError from inside
+    refresh_geometry().
+    """
+    feature = EnumFeature("PixelFormat", entries={"Mono8": 0x01080001,
+                                                  "Mono16": 0x01100007})
+    assert feature.validate("Mono16") == "Mono16"
+    assert feature.validate(0x01100007) == "Mono16"
+
+
+def test_an_enumeration_refuses_a_value_outside_its_entries():
+    feature = EnumFeature("PixelFormat", entries={"Mono8": 0x01080001,
+                                                  "Mono16": 0x01100007})
+    with pytest.raises(FeatureError):
+        feature.validate("Mono12")
+    with pytest.raises(FeatureError):
+        feature.validate(12345)
+
+
+def test_a_refused_enumeration_says_what_the_choices_were():
+    """
+    A bare "12345 is not valid" leaves someone reading a device log with
+    nothing to compare against, and the ordinals are what a client actually
+    wrote.
+    """
+    feature = EnumFeature("PixelFormat", entries={"Mono8": 0x01080001})
+    with pytest.raises(FeatureError) as excinfo:
+        feature.validate(12345)
+    assert "Mono8" in str(excinfo.value)
+    assert str(0x01080001) in str(excinfo.value)
 
 
 def test_payload_size_matches_the_geometry():
