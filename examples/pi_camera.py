@@ -232,6 +232,24 @@ class _FrameSink(Output):
         self.timestamp_ns = 0
         self.n_superseded = 0
 
+        # What the sensor was actually set to for the frame in self.frame,
+        # as opposed to what was last asked for. Filled by note_metadata()
+        # from picamera2's post_callback, which runs on this same thread and
+        # immediately before the encoder is handed the same request:
+        #
+        #     if self.post_callback:
+        #         self.post_callback(req)
+        #     for encoder in self._encoders:
+        #         encoder.encode(encoder.name, req)      # -> outputframe()
+        #
+        # so a plain attribute is enough -- no queue, and no matching frames
+        # to metadata by timestamp afterwards.
+        self.metadata = {}
+        self._next_metadata = {}
+
+    def note_metadata(self, metadata):
+        self._next_metadata = metadata
+
     def outputframe(self, frame, keyframe=True, timestamp=None, packet=None,
                     audio=False):
         # The buffer is padded to the stream's stride, so it is wider than
@@ -262,21 +280,38 @@ class _FrameSink(Output):
             # hand back the padded rows". It does not; the two outputs are
             # byte-identical. That one wrong sentence cost a factor of 27.
             self.frame = bytes(image.data)
+            self.metadata = self._next_metadata
             self.frame_count += 1
             # picamera2's timestamp is int microseconds, rebased so the first
             # frame of the encoder run is zero.
             self.timestamp_ns = (timestamp or 0) * 1000
             self.condition.notify()
 
-    def take(self, timeout=1.0):
+    def take(self, timeout=1.0, accept=None):
+        """
+        The newest frame, or None if none arrives inside the timeout.
+
+        `accept` is called with the frame's own metadata and may reject it,
+        in which case this waits for the next one. That is how a frame the
+        sensor exposed before a control change gets skipped rather than
+        handed out: rejecting is much cheaper here than anywhere later,
+        since the frame is simply dropped and never packetised.
+        """
+        deadline = time.monotonic() + timeout
         with self.condition:
-            if self.frame is None:
-                if not self.condition.wait(timeout):
+            while True:
+                if self.frame is not None:
+                    if accept is None or accept(self.metadata):
+                        frame, self.frame = self.frame, None
+                        return frame, self.frame_count, self.timestamp_ns
+                    # Rejected, so drop it. Leaving it in place would make
+                    # the wait below return instantly on the same frame,
+                    # spinning until the deadline.
+                    self.frame = None
+                    self.n_superseded += 1
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not self.condition.wait(remaining):
                     return None
-                if self.frame is None:
-                    return None
-            frame, self.frame = self.frame, None
-            return frame, self.frame_count, self.timestamp_ns
 
 
 class PiCamera(EmulatedCamera):
@@ -400,6 +435,22 @@ class PiCamera(EmulatedCamera):
         self.encoder = Encoder()
         self.started = False
 
+        # Every completed request passes through here on its way to the
+        # encoder, which is what lets a frame be judged by what the sensor
+        # actually did rather than by what was last asked of it. Bound to the
+        # method rather than to self.sink, because _apply_pixel_format builds
+        # a new sink and a captured one would go stale.
+        self.picam2.post_callback = self._note_frame_metadata
+
+        # Controls pushed at libcamera that the sensor has not reached yet,
+        # as {libcamera control name: (value, deadline)}. Keyed by libcamera
+        # name and held in libcamera units, deliberately not merged with
+        # _pending below: that one is in GenICam units (Gain is dB there and
+        # a linear multiplier here) and comparing across the two would be a
+        # silent unit error rather than a loud one.
+        self._settling = {}
+        self._settle_lock = threading.Lock()
+
         # picam2.capture_metadata() blocks until the next frame completes,
         # which at 4056x3040 is ~85 ms and in practice sometimes far longer.
         # get_camera_settings() runs inline on the control thread, where the
@@ -458,14 +509,96 @@ class PiCamera(EmulatedCamera):
     #: match never comes: 200000 us is granted as 199787.
     PENDING_TOLERANCE = 0.05
 
-    #: After this, metadata wins whatever it says. Long enough to cover a
-    #: slow frame at full resolution, short enough that a coerced value is
-    #: not misreported for long.
-    PENDING_TIMEOUT = 2.0
+    #: Frames between a control reaching libcamera and the sensor showing it.
+    #:
+    #: libcamera does not apply a control to the next frame; it applies it to
+    #: one that has not started exposing. Measured on the IMX477, changing
+    #: exposure and counting frames until the metadata agreed:
+    #:
+    #:     buffer_count  2 -> 6      buffer_count  4 ->  8
+    #:     buffer_count  3 -> 7      buffer_count  6 -> 10
+    #:
+    #: which is buffer_count + 4: four frames of fixed sensor and ISP delay,
+    #: plus one for every request already submitted with the old value. We
+    #: configure buffer_count 6, so 10, and 12 leaves a little margin.
+    SETTLE_FRAMES = 12
+
+    #: A hard ceiling on the above, because it is a frame count and the time
+    #: it comes to depends on the frame rate: 12 frames is 1.2 s at 10 fps
+    #: but two minutes at 0.1. Past this the sensor is assumed not to be
+    #: coming, and frames and read-backs go through unjudged -- the same
+    #: behaviour as before any of this existed, rather than a stall.
+    SETTLE_SECONDS_MAX = 10.0
+
+    def _settle_seconds(self):
+        # Whichever is slower: the rate that was asked for, or the frame
+        # duration the sensor reports. A request for 100 fps that the readout
+        # can only serve at 40 would otherwise compute a settle window under
+        # half the time the frames actually take.
+        period = 1.0 / max(0.1, float(self._requested_rate))
+        duration_us = self.sink.metadata.get("FrameDuration")
+        if duration_us:
+            period = max(period, duration_us / 1e6)
+        return min(self.SETTLE_SECONDS_MAX, self.SETTLE_FRAMES * period)
+
+    def _note_frame_metadata(self, request):
+        """picamera2's post_callback: the metadata of the frame about to be
+        encoded, which the sink then keeps with the frame's bytes."""
+        self.sink.note_metadata(request.get_metadata())
+
+    def _note_settling(self, controls):
+        """
+        Record what was just pushed at libcamera, so frames exposed before it
+        landed can be told apart from frames exposed after.
+
+        Only the controls that change what the image looks like. FrameRate
+        settles the same way, but a frame taken at the old rate is not a
+        wrong frame -- it is the same picture, sooner.
+        """
+        deadline = time.monotonic() + self._settle_seconds()
+        with self._settle_lock:
+            for name in ("ExposureTime", "AnalogueGain"):
+                if name in controls:
+                    self._settling[name] = (float(controls[name]), deadline)
+
+    def _settled(self, metadata):
+        """
+        Whether a frame with this metadata was exposed with what was asked
+        for. Called by the sink, once per candidate frame.
+        """
+        now = time.monotonic()
+        ready = True
+        with self._settle_lock:
+            for name, (value, deadline) in list(self._settling.items()):
+                actual = metadata.get(name)
+                if actual is not None and abs(actual - value) <= (
+                        abs(value) * self.PENDING_TOLERANCE):
+                    del self._settling[name]
+                    continue
+                if now > deadline:
+                    # Not a stall. Either the sensor refused the value, or
+                    # there is no metadata to judge by at all -- neither is a
+                    # reason to withhold frames indefinitely, and a snap that
+                    # never returns is worse than one that returns the value
+                    # the hardware actually chose.
+                    log.warning("%s has not reached the sensor after %.1f s; "
+                                "delivering frames as they come", name,
+                                self._settle_seconds())
+                    del self._settling[name]
+                    continue
+                if actual is not None:
+                    ready = False
+        return ready
 
     def _note_requested(self, name, value):
+        # The same window the frames settle over, and for the same reason:
+        # this deadline was a flat 2 s, which at the 4.75 fps of a full
+        # resolution raw stream expires before the sensor has applied the
+        # value. The read-back then reverts to the old one and changes its
+        # mind a second later -- exactly the ping-pong this exists to stop,
+        # still present at the frame rates that matter most.
         self._pending[name] = (float(value),
-                               time.monotonic() + self.PENDING_TIMEOUT)
+                               time.monotonic() + self._settle_seconds())
 
     def _reported(self, name, actual):
         """
@@ -617,12 +750,16 @@ class PiCamera(EmulatedCamera):
         AeEnable goes off first, or the auto-exposure algorithm fights every
         exposure the client sets.
         """
-        self.picam2.set_controls({
+        controls = {
             "AeEnable": False,
             "ExposureTime": int(self.settings["ExposureTime"]),
             "AnalogueGain": db_to_gain(self.settings["Gain"]),
             "FrameRate": float(self.settings["AcquisitionFrameRate"]),
-        })
+        }
+        self.picam2.set_controls(controls)
+        # A restart runs the same latency as any other write, so the frames
+        # the old configuration left in the pipeline are skipped too.
+        self._note_settling(controls)
 
     def _bytes_per_pixel(self):
         return c.bits_per_pixel(self.pixel_format_value()) // 8
@@ -684,8 +821,13 @@ class PiCamera(EmulatedCamera):
     def next_frame(self):
         """
         Blocks until the sensor delivers a frame, which is also the pacing.
+
+        Frames exposed before a control change reached the sensor are skipped
+        rather than sent. Returning None for them is what the caller already
+        does with a timeout -- it retries -- so this costs no special case
+        there and does not turn a single frame acquisition into a hang.
         """
-        taken = self.sink.take(timeout=1.0)
+        taken = self.sink.take(timeout=1.0, accept=self._settled)
         if taken is None:
             return None
         data, count, timestamp_ns = taken
@@ -769,6 +911,7 @@ class PiCamera(EmulatedCamera):
         if controls:
             log.info("applying %s", controls)
             self.picam2.set_controls(controls)
+            self._note_settling(controls)
 
     def get_camera_settings(self):
         # A dict lookup, deliberately. See the note by _metadata above: this

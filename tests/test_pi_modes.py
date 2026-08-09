@@ -11,6 +11,7 @@ import time
 import importlib
 import os
 import sys
+import threading
 import types
 
 import pytest
@@ -111,9 +112,20 @@ def test_the_label_round_trips_through_the_parser():
 # Constructed without __init__, because that opens a camera. Only the
 # pending-value bookkeeping is under test and it touches nothing else.
 
-def _settings_stub():
+def _sink():
+    # 2x2, one byte a pixel, so a frame is four bytes and unpadded.
+    return pi_camera._FrameSink(2, 2, 1)
+
+
+def _settings_stub(rate=10.0):
     obj = pi_camera.PiCamera.__new__(pi_camera.PiCamera)
     obj._pending = {}
+    obj._settling = {}
+    obj._settle_lock = threading.Lock()
+    obj._requested_rate = rate
+    # Consulted for the frame duration the sensor reports, which is what the
+    # settle window is counted in.
+    obj.sink = _sink()
     return obj
 
 
@@ -180,7 +192,7 @@ class _FakePicam2(object):
 
 
 def _constraint_stub(exposure_us, rate):
-    cam = _settings_stub()
+    cam = _settings_stub(rate=rate)
     cam.picam2 = _FakePicam2()
     cam._requested_exposure_us = float(exposure_us)
     cam._requested_rate = float(rate)
@@ -221,3 +233,131 @@ def test_a_rate_faster_than_the_exposure_shortens_it():
     assert cam.picam2.controls == {"FrameRate": 10.0, "ExposureTime": 100000}
     assert cam._requested_exposure_us == 100000.0
     assert cam._pending["ExposureTime"][0] == 100000.0
+
+
+# --- frames exposed before the control reached the sensor ----------------
+#
+# libcamera applies a control to a frame that has not started exposing, so
+# for several frames after a write the sensor is still delivering the old
+# setting. Handing those out is what made a snap in micro-manager show the
+# previous exposure until you had clicked through the whole queue.
+
+
+def test_a_frame_from_before_the_write_is_held_back():
+    cam = _settings_stub()
+    cam._note_settling({"ExposureTime": 40000})
+    assert cam._settled({"ExposureTime": 5000}) is False
+    # Quantisation means the sensor never reports the exact request, so the
+    # match is the same tolerance the read-back uses.
+    assert cam._settled({"ExposureTime": 39900}) is True
+
+
+def test_the_hold_ends_once_the_sensor_has_agreed_once():
+    """
+    The check is for the change arriving, not for the value staying. Leaving
+    the entry in place would re-judge every later frame against a request the
+    client may since have moved on from.
+    """
+    cam = _settings_stub()
+    cam._note_settling({"ExposureTime": 40000})
+    assert cam._settled({"ExposureTime": 40000}) is True
+    assert cam._settled({"ExposureTime": 5000}) is True
+
+
+def test_gain_is_judged_in_libcamera_units():
+    # Gain is dB across the wire and a linear multiplier here. Recording the
+    # controls actually pushed, rather than the feature values, is what keeps
+    # those from being compared against each other.
+    cam = _settings_stub()
+    cam._note_settling({"AnalogueGain": 4.0})
+    assert cam._settled({"AnalogueGain": 1.0}) is False
+    assert cam._settled({"AnalogueGain": 4.0}) is True
+
+
+def test_the_frame_rate_alone_does_not_hold_frames():
+    # A frame taken at the old rate is the same picture, sooner.
+    cam = _settings_stub()
+    cam._note_settling({"FrameRate": 2.0})
+    assert cam._settled({"FrameRate": 10.0}) is True
+
+
+def test_a_value_the_sensor_never_applies_stops_holding_frames():
+    """
+    A snap that never returns is worse than one showing the value the
+    hardware actually chose, so the hold is bounded.
+    """
+    cam = _settings_stub()
+    cam._note_settling({"ExposureTime": 40000})
+    assert cam._settled({"ExposureTime": 5000}) is False
+    cam._settling["ExposureTime"] = (40000.0, time.monotonic() - 1.0)
+    assert cam._settled({"ExposureTime": 5000}) is True
+    assert cam._settling == {}
+
+
+def test_a_frame_with_no_metadata_is_not_held():
+    # Nothing to judge by is not a reason to withhold frames.
+    cam = _settings_stub()
+    cam._note_settling({"ExposureTime": 40000})
+    assert cam._settled({}) is True
+
+
+def test_the_settle_window_follows_the_frame_rate():
+    # It is a frame count, so the time it comes to has to track the rate. A
+    # flat two seconds -- what this was -- expires before the sensor has
+    # applied anything at the ~4.75 fps of a full resolution raw stream.
+    assert _settings_stub(rate=10.0)._settle_seconds() == pytest.approx(1.2)
+    assert _settings_stub(rate=2.0)._settle_seconds() == pytest.approx(6.0)
+
+
+def test_the_settle_window_believes_the_sensor_over_the_request():
+    cam = _settings_stub(rate=100.0)        # more than the readout can serve
+    cam.sink.metadata = {"FrameDuration": 25000}            # 40 fps, really
+    assert cam._settle_seconds() == pytest.approx(0.3)
+
+
+def test_the_settle_window_is_capped():
+    cam = _settings_stub(rate=0.1)
+    assert cam._settle_seconds() == pi_camera.PiCamera.SETTLE_SECONDS_MAX
+
+
+# --- the sink side of the same thing --------------------------------------
+
+
+def test_the_sink_hands_over_a_frame_that_passes():
+    sink = _sink()
+    sink.note_metadata({"ExposureTime": 5000})
+    sink.outputframe(bytes([1, 2, 3, 4]), timestamp=7)
+    taken = sink.take(timeout=0.5, accept=lambda md: md["ExposureTime"] == 5000)
+    assert taken is not None
+    assert taken[0] == bytes([1, 2, 3, 4])
+    assert taken[2] == 7000            # microseconds in, nanoseconds out
+
+
+def test_the_sink_drops_a_rejected_frame_rather_than_spinning_on_it():
+    sink = _sink()
+    sink.note_metadata({"ExposureTime": 5000})
+    sink.outputframe(bytes([1, 2, 3, 4]), timestamp=1)
+    started = time.monotonic()
+    assert sink.take(timeout=0.2,
+                     accept=lambda md: md["ExposureTime"] == 40000) is None
+    # Left in place it would satisfy the wait immediately and be rejected
+    # again, burning the timeout at whatever rate the loop can run.
+    assert sink.frame is None
+    assert time.monotonic() - started >= 0.2
+
+
+def test_the_sink_waits_for_the_frame_that_has_the_change():
+    sink = _sink()
+    sink.note_metadata({"ExposureTime": 5000})
+    sink.outputframe(bytes([1, 2, 3, 4]), timestamp=1)
+
+    def deliver_later():
+        time.sleep(0.05)
+        sink.note_metadata({"ExposureTime": 40000})
+        sink.outputframe(bytes([9, 9, 9, 9]), timestamp=2)
+
+    threading.Thread(target=deliver_later, daemon=True).start()
+    taken = sink.take(timeout=2.0,
+                      accept=lambda md: md["ExposureTime"] == 40000)
+    assert taken is not None
+    assert taken[0] == bytes([9, 9, 9, 9])
