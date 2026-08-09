@@ -160,8 +160,30 @@ $ sudo sysctl -w net.core.rmem_max=20000000
 $ sudo sysctl -w net.core.rmem_default=20000000
 ```
 
-Large frames want jumbo frames on both ends and a matching `GevSCPSPacketSize`.
-The device honours the packet delay register if a client sets one.
+**A frame that does not fit in the client's socket buffer will fail every
+time.** A frame goes out as one uninterrupted burst, so the client has to
+drain it as it arrives; once the burst is larger than the buffer, any
+scheduling hiccup loses packets, and with no resend a single lost packet costs
+the frame. The cutoff is sharp rather than gradual. Measured against an
+IMX477 with `rmem_max` at 16.8 MB:
+
+| frame | packets | result |
+|---|---|---|
+| 2028x1520 RGB8, 9.2 MB | 6,282 | 126 frames, **0 failures, 0 missing packets** |
+| 4056x3040 BayerBG16, 24.7 MB | 16,753 | 0 frames, 50 failures |
+| 4056x3040 RGB8, 37.0 MB | 27,120 | 0 frames, 54 failures |
+
+Two ways out, and the second needs no root. Raise `rmem_max` past the frame
+size — 20 MB is not enough for a full frame from a 12 MPix sensor, so size it
+from your payload. Or set the packet delay, which paces the burst so the
+client can keep up: the same 37 MB frame that failed every time goes to **25
+frames, 0 failures, 0 missing packets** with 20 µs between packets
+(`arv-camera-test -a -m 5000 -y 20000`). That costs 0.54 s of pacing per
+frame, so it buys correctness with frame rate — worth tuning down until it
+starts failing.
+
+Jumbo frames help by cutting the packet count, if every hop supports them and
+`GevSCPSPacketSize` matches.
 
 Some clients size their own packets by asking the device to fire a test packet
 at a candidate size and seeing whether it arrives. The device answers those

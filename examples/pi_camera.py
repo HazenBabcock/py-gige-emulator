@@ -11,16 +11,28 @@
 # ported from a working Aravis-based bridge; the parts that are new here are
 # the settings hooks.
 #
-# A full resolution frame is 24.7 MB, which is about 18,000 packets at the
-# default 1400 byte packet size and more than a gigabit link can carry at
-# 10 fps. Use jumbo frames on both ends if you can:
+# FULL RESOLUTION NEEDS A PACKET DELAY, or it fails completely rather than
+# degrading. A 4056x3040 frame is 37 MB as RGB8 and 24.7 MB as Bayer, or
+# 27,120 and 16,753 packets, and the emulator sends a frame as one
+# uninterrupted burst. Once that burst is larger than the client's socket
+# buffer it cannot drain fast enough, and with packet resend not advertised a
+# single lost packet costs the whole frame. Measured against Aravis with
+# rmem_max at 16.8 MB: every full resolution frame failed, while 2028x1520 at
+# 9.2 MB completed 126 of 126 with no missing packets at all.
+#
+# Pacing the burst fixes it and needs no root on either side:
+#
+#   arv-camera-test-0.8 -n <name> -a -m 5000 -y 20000
+#
+# which took the same 37 MB frame from 0 completed to 25 completed with zero
+# missing packets, at about 1 fps -- the 20 us delay costs 0.54 s per frame,
+# so tune it down until frames start failing. Raising rmem_max past the frame
+# size works too, but 20 MB is not enough for a 12 MPix sensor.
+#
+# Jumbo frames help by cutting the packet count, if every hop supports them:
 #
 #   sudo ip link set eth0 mtu 9000          (on the Pi and the client)
 #   python examples/pi_camera.py --interface eth0 --packet-size 8000
-#
-# and raise the receive buffer on the client:
-#
-#   sudo sysctl -w net.core.rmem_max=20000000
 #
 
 import argparse
