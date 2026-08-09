@@ -17,9 +17,14 @@ class MyCamera(EmulatedCamera):
     # Width, Height, PixelFormat, PayloadSize, SensorWidth, SensorHeight,
     # AcquisitionMode, AcquisitionStart/Stop and AcquisitionFrameRate are
     # provided. Declare anything else you want the client to see.
+    # The category is where a client's feature tree files this, and it is
+    # worth getting right: exposure is a time and gain is an amplitude, so
+    # they belong in different ones however often they are tuned together.
     extra_features = (
-        FloatFeature("ExposureTime", default=10000.0, min=1.0, max=1e6, unit="us"),
-        FloatFeature("Gain", default=0.0, min=0.0, max=24.0, unit="dB"),
+        FloatFeature("ExposureTime", "Exposure time", "AcquisitionControl",
+                     "RW", default=10000.0, min=1.0, max=1e6, unit="us"),
+        FloatFeature("Gain", "Analog gain", "AnalogControl", "RW",
+                     default=0.0, min=0.0, max=24.0, unit="dB"),
     )
 
     def next_frame(self):
