@@ -23,11 +23,10 @@ log = logging.getLogger(__name__)
 
 class FeatureBridge(object):
 
-    def __init__(self, camera, memory, lock, on_acquisition=None):
+    def __init__(self, camera, memory, lock):
         self.camera = camera
         self.memory = memory
         self.lock = lock
-        self.on_acquisition = on_acquisition
         self.features = camera.feature_set
 
     # --- reads -----------------------------------------------------------
@@ -149,14 +148,10 @@ class FeatureBridge(object):
                 self.camera.latch_geometry()
                 self.camera.acquiring = True
             log.info("acquisition started, %r", self.camera.geometry)
-            if self.on_acquisition is not None:
-                self.on_acquisition(True)
         elif feature.name == "AcquisitionStop":
             with self.lock:
                 self.camera.acquiring = False
             log.info("acquisition stopped")
-            if self.on_acquisition is not None:
-                self.on_acquisition(False)
 
     # --- device side bookkeeping ----------------------------------------
 
