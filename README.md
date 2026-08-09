@@ -1,5 +1,7 @@
 ### py-gige-emulator ###
 
+[![tests](https://github.com/HazenBabcock/py-gige-emulator/actions/workflows/tests.yml/badge.svg)](https://github.com/HazenBabcock/py-gige-emulator/actions/workflows/tests.yml)
+
 A pure Python GigE Vision camera emulator. It speaks GVCP and GVSP directly over
 UDP, so any GigE Vision client on the network — `arv-viewer` and anything built
 on [Aravis](https://github.com/AravisProject/aravis) — sees a real camera.
@@ -281,19 +283,45 @@ device; time between an answer and the next request is the link.
 #### Tests ####
 
 ```
-$ PYTHONPATH=src:tests python -m pytest tests/
+$ pip install -e ".[test]"
+$ python -m pytest
 ```
+
+`PYTHONPATH=src python -m pytest` works too — pytest puts `tests/` on the path
+itself — but installing exercises the packaging as well, so a `pyproject.toml`
+that no longer builds fails here rather than on someone's first `pip install`.
+The `test` extra pulls in numpy, which `tests/test_pi_modes.py` needs: it
+imports the Pi example, and while picamera2 is stubbed there, numpy is not.
 
 The suite needs no network and no Aravis: `tests/fakeclient.py` is a minimal
 GigE Vision client that drives the whole handshake over loopback. Where it
 reassembles a frame it uses the same rule the real client uses — byte offset
 derived from the packet id — rather than trusting anything the device claims.
 
+GitHub Actions runs it on every push, on Python 3.10 through 3.13. Linux only,
+and deliberately: `netif.py` imports `fcntl` at module scope, so the package
+does not import at all on Windows, and `SO_BINDTODEVICE` is Linux specific.
+
 #### Status ####
 
 Verified against Aravis 0.8 (`arv-tool-0.8`, `arv-camera-test-0.8`): discovery,
 GenICam feature tree, control privilege and heartbeat, and continuous
 acquisition with zero size mismatches, timeouts or missing frames.
+
+Most recently on real hardware — an IMX477 on a Raspberry Pi 5 serving
+1332x990 RGB8 over `examples/pi_camera.py`, read by Aravis 0.8.36 on a second
+machine across a wired link:
+
+```
+$ arv-camera-test-0.8 -n bench-hq -a --duration 20
+n_completed_buffers    = 201        n_missing_packets      = 0
+n_failures             = 0          n_size_mismatch_errors = 0
+n_missing_frames       = 0          n_received_packets     = 583503
+```
+
+800 MB at 39.6 MiB/s, no errors of any kind. Note `--duration` is what stops
+the tool: `-m` is frame retention and `-y` the packet delay, and neither
+bounds the run, so without it the tool streams until interrupted.
 
 Also verified against a second, independent commercial stack — Balluff's
 `mvGenTLProducer.cti` — which enumerates the camera with full identity and
