@@ -340,6 +340,71 @@ def test_a_resent_packet_completes_the_frame_byte_for_byte(client, server):
         camera.feature_set.by_name["AcquisitionStop"].address, 1)
 
 
+def test_stopping_releases_the_frame_held_for_resends(client, server):
+    """
+    A frame is kept after sending so a resend can be answered from it. That
+    retention must end when the stream goes quiet, or a camera left idle
+    holds its last frame for as long as the process lives -- 24.7 MB at full
+    resolution, for a request that is never coming.
+    """
+    camera = server.camera
+    client.take_control()
+    packet_size = client.open_stream()
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStart"].address, 1)
+    client.receive_frame(packet_size)
+
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStop"].address, 1)
+
+    deadline = time.monotonic() + 2.0
+    while server.stream._retained and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not server.stream._retained
+
+
+def test_restarting_delivers_a_fresh_frame_not_the_retained_one(client, server):
+    """
+    The retained frame is only ever read to answer a resend naming its own
+    id, never sent as a new frame -- so a client that stops, waits, and
+    starts again gets a live image rather than whatever was in flight when
+    it left. Worth pinning down: the two paths both end in sendto() on the
+    same socket, and nothing but this test says which frame each one sends.
+    """
+    camera = server.camera
+    client.take_control()
+    packet_size = client.open_stream()
+    start = camera.feature_set.by_name["AcquisitionStart"].address
+    stop = camera.feature_set.by_name["AcquisitionStop"].address
+
+    client.write_register(start, 1)
+    for _ in range(2):
+        _, _, before = client.receive_frame(packet_size)
+    client.write_register(stop, 1)
+
+    def pattern_index(data):
+        for candidate in range(camera.frame_index + 2):
+            if data == camera.pattern_for(candidate, len(data)):
+                return candidate
+        return None
+
+    index_before = pattern_index(before)
+    assert index_before is not None
+
+    # Long enough that a device replaying its buffer would be obvious.
+    time.sleep(0.5)
+
+    client.write_register(start, 1)
+    _, _, after = client.receive_frame(packet_size)
+    index_after = pattern_index(after)
+
+    assert index_after is not None, "frame after restart matches no pattern"
+    assert index_after > index_before, (
+        "restart replayed frame %s; expected something newer than %s"
+        % (index_after, index_before))
+    client.write_register(stop, 1)
+
+
 def test_a_resend_for_a_frame_already_released_says_so(client, server):
     """
     Silence would cost the client its whole retention timeout before it gave

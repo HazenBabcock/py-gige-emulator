@@ -48,24 +48,35 @@ IP_PMTUDISC_DO = 2
 
 class StreamChannel(object):
 
-    #: How long to keep answering resend requests after a frame's trailer has
-    #: gone out, before releasing it and asking the camera for the next one.
+    #: How many recent frames stay answerable for a resend.
     #:
-    #: There is no "frame complete" message in GigE Vision. A client speaks
-    #: only when something is missing, so silence means either that it has
-    #: everything or that its request is still in flight -- the device cannot
-    #: tell which, and has to wait long enough to be sure.
+    #: There is no "frame complete" message in GigE Vision -- the whole
+    #: command set is discovery, bye, resend, and register and memory access.
+    #: A client speaks only when something is *missing*, so silence means
+    #: either that it has everything or that its request is still in flight,
+    #: and the device cannot tell which.
     #:
-    #: 5 ms is generous rather than arbitrary. Aravis arms a missing packet
-    #: with ARV_GV_STREAM_INITIAL_PACKET_TIMEOUT_US_DEFAULT, which is 1 ms,
-    #: and the round trip on a wired link here is 0.4 ms. The clock restarts
-    #: on every request served, so a frame losing packets steadily keeps
-    #: being repaired; only quiet ends it.
-    RESEND_GUARD = 0.005
+    #: Two, so that sending frame N+1 does not end N's availability. Holding
+    #: only the current frame forces the sender to sit idle after each one
+    #: instead, waiting to see whether a request arrives, and that wait is
+    #: not small: Aravis arms a missing packet after 1 ms, but at 88,000
+    #: packets/s its own receive backlog delays the request far past that.
+    #: Measured at full resolution, a 5 ms wait left 510 requests arriving
+    #: too late while 250 ms left none -- and 250 ms of dead time per frame
+    #: halves the frame rate. Overlapping instead costs one buffer and no
+    #: time at all: N stays answerable for exactly as long as N+1 takes to
+    #: send, which is the same window the wait was buying.
+    RETAIN_FRAMES = 2
+
+    #: Extra dwell after a frame before fetching the next, on top of the
+    #: overlap above. Zero by default -- the overlap is what provides the
+    #: window now. Raise it only for a client that asks later than a whole
+    #: frame period, which is a thing to measure before assuming.
+    RESEND_GUARD = 0.0
 
     def __init__(self, camera, memory, lock, device_ip,
                  control=None, idle_poll=0.02, interface=None,
-                 resend_guard=None):
+                 resend_guard=None, retain_frames=None):
         self.camera = camera
         self.memory = memory
         self.lock = lock
@@ -80,6 +91,8 @@ class StreamChannel(object):
 
         self.resend_guard = (self.RESEND_GUARD if resend_guard is None
                              else resend_guard)
+        self.retain_frames = max(1, self.RETAIN_FRAMES if retain_frames is None
+                                 else retain_frames)
 
         self.frame_id = 0
         self.n_frames = 0
@@ -90,14 +103,14 @@ class StreamChannel(object):
         self.n_resent_packets = 0
         self.n_resend_unavailable = 0
 
-        # The one frame a resend can still be served from, as
+        # Recent frames a resend can still be served from, oldest first, each
         # (frame_id, data, geometry, packet_size, timestamp_ns).
         #
-        # One frame, not a ring of them, because the sender never runs ahead:
-        # it finishes answering for a frame before asking the camera for the
-        # next. A ring would only be needed to pipeline, and pipelining is
-        # what would make a resend arrive for a frame already overwritten.
-        self._retained = None
+        # Bounded and short. The cost is real -- two full resolution frames
+        # is 49 MB -- so it is not a queue that grows, and it is emptied
+        # whenever the stream goes quiet rather than lingering while a camera
+        # sits idle.
+        self._retained = []
         self._last_resend = 0.0
 
     # --- lifecycle -------------------------------------------------------
@@ -155,6 +168,9 @@ class StreamChannel(object):
         if self.socket is not None:
             self.socket.close()
             self.socket = None
+        # After the join, so a thread still inside next_frame() cannot retain
+        # a frame on its way out and leave it held for the process's life.
+        self._release_retained()
 
     # --- the frame loop --------------------------------------------------
 
@@ -259,12 +275,13 @@ class StreamChannel(object):
             return False
 
         with self.lock:
-            retained = self._retained
+            retained = next((f for f in self._retained if f[0] == frame_id),
+                            None)
             target = self._stream_target()
         if target is None:
             return False
 
-        if retained is None or retained[0] != frame_id:
+        if retained is None:
             # Answer rather than ignore: silence costs the client its whole
             # retention timeout before it gives up on a frame we cannot
             # complete anyway.
@@ -305,16 +322,36 @@ class StreamChannel(object):
         self._last_resend = time.monotonic()
         return sent > 0
 
+    def _release_retained(self):
+        """
+        Drop the frame kept for resends.
+
+        Today this is belt and braces: _await_resends() already releases
+        after every frame, so an idle stream holds nothing. It is here
+        because that is a property of the current shape rather than a
+        guarantee -- anything that overlaps frames, keeping N answerable
+        while N+1 goes out, releases on a rule ("when N+2 starts") that a
+        stopped acquisition never satisfies. The buffers would then sit
+        pinned for as long as the camera idled, which at full resolution is
+        49 MB doing nothing.
+        """
+        with self.lock:
+            self._retained = []
+            self._last_resend = 0.0
+
     def _await_resends(self):
         """
-        Stay on the frame just sent until the client has been quiet for
-        resend_guard, then release it.
+        Optional extra dwell after a frame, for a client that asks later than
+        the overlap covers.
 
-        This is also the only pacing the stream has, and it is enough of one:
-        the loop cannot start the next frame until it has finished answering
-        for this one, so the send rate degrades to whatever the client can
-        actually take rather than running the link flat out.
+        Off by default, and it does not release anything -- retention is
+        bounded by frame count now, not by this clock. Note what it costs
+        when switched on: the sender is idle throughout, so the frame rate
+        becomes 1 / (send + guard). At full resolution a 0.25 s guard halves
+        it, which is why the overlap replaced it rather than joining it.
         """
+        if self.resend_guard <= 0:
+            return
         deadline = time.monotonic() + self.resend_guard
         while self.running:
             now = time.monotonic()
@@ -324,8 +361,6 @@ class StreamChannel(object):
             if now >= deadline:
                 break
             time.sleep(min(0.001, deadline - now))
-        with self.lock:
-            self._retained = None
 
     def _snapshot(self):
         """
@@ -353,6 +388,11 @@ class StreamChannel(object):
         while self.running:
             state = self._snapshot()
             if state is None:
+                # Covers every way the stream goes quiet -- acquisition
+                # stopped, control lost, no destination yet -- rather than
+                # AcquisitionStop alone, because all of them leave a frame
+                # nobody will ever ask about again.
+                self._release_retained()
                 time.sleep(self.idle_poll)
                 continue
 
@@ -442,9 +482,16 @@ class StreamChannel(object):
         # client arms a missing packet after 1 ms and asks while the burst is
         # still in flight, so a frame that only became resendable once it had
         # finished sending would miss most of the requests for it.
+        #
+        # Trimming here rather than on a timer is what makes the window
+        # self-scaling: a frame stays answerable for as long as the frames
+        # after it take to send, which is the same clock the client's own
+        # backlog runs on. Nothing to tune, and no constant that is right at
+        # one resolution and wrong at another.
         with self.lock:
-            self._retained = (frame_id, data, geometry, packet_size,
-                              timestamp_ns)
+            self._retained.append((frame_id, data, geometry, packet_size,
+                                   timestamp_ns))
+            del self._retained[:-self.retain_frames]
             self._last_resend = 0.0
 
         ceiling = gvsp.max_datagram_size(packet_size)
