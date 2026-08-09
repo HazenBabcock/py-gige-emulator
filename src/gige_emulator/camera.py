@@ -41,7 +41,7 @@ class EmulatedCamera(object):
 
     def __init__(self, width=640, height=480, pixel_format="Mono8",
                  pixel_formats=None, sensor_width=None, sensor_height=None,
-                 frame_rate=10.0):
+                 frame_rate=10.0, max_frame_rate=1000.0):
 
         if pixel_formats is None:
             pixel_formats = [pixel_format]
@@ -57,7 +57,8 @@ class EmulatedCamera(object):
         self.feature_set = FeatureSet()
         self._build_core_features(width, height, pixel_format, pixel_formats,
                                   sensor_width or width,
-                                  sensor_height or height, frame_rate)
+                                  sensor_height or height, frame_rate,
+                                  max_frame_rate)
         self.feature_set.extend(list(self.extra_features))
 
         self.settings = self.feature_set.defaults()
@@ -68,7 +69,8 @@ class EmulatedCamera(object):
     # --- core features ---------------------------------------------------
 
     def _build_core_features(self, width, height, pixel_format, pixel_formats,
-                             sensor_width, sensor_height, frame_rate):
+                             sensor_width, sensor_height, frame_rate,
+                             max_frame_rate=1000.0):
         add = self.feature_set.add
 
         add(IntFeature("SensorWidth", "Sensor width in pixels",
@@ -128,9 +130,17 @@ class EmulatedCamera(object):
                            "AcquisitionControl", "RW"))
         add(CommandFeature("AcquisitionStop", "Stop acquisition",
                            "AcquisitionControl", "RW"))
+        # max_frame_rate is the widest this device can ever go, across every
+        # mode it has. It used to be a flat 1000.0 for every camera ever
+        # built on this class, which a client believes: arv-viewer will
+        # happily offer 500 fps on a sensor whose fastest readout is 147.
+        #
+        # A camera whose ceiling moves with the selected readout mode points
+        # p_max at a feature it maintains, and this stays as the absolute
+        # bound that validate() enforces. See examples/pi_camera.py.
         add(FloatFeature("AcquisitionFrameRate", "Frames per second",
                          "AcquisitionControl", "RW", default=float(frame_rate),
-                         min=0.001, max=1000.0, unit="Hz"))
+                         min=0.001, max=float(max_frame_rate), unit="Hz"))
 
     # --- derived ---------------------------------------------------------
 

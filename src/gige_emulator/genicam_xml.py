@@ -36,10 +36,32 @@ def _reg_name(feature):
 
 
 def _common_reg_body(feature, out, indent="\t\t"):
+    # The invalidators go on the *register* node, not on the feature node
+    # above it, and that placement is the whole point. The cached value lives
+    # in the register; invalidating the feature alone leaves the register
+    # cache intact and the client serves the same stale number back from it.
+    for name in feature.invalidated_by:
+        out.append("%s<pInvalidator>%sReg</pInvalidator>" % (indent, name))
     out.append("%s<Address>0x%x</Address>" % (indent, feature.address))
     out.append("%s<Length>%d</Length>" % (indent, feature.size))
     out.append("%s<AccessMode>%s</AccessMode>" % (indent, feature.access))
     out.append("%s<pPort>Device</pPort>" % indent)
+
+
+def _bound(feature, which, out):
+    """
+    Emit <Min>/<Max> or <pMin>/<pMax>, never both -- GenICam takes one form
+    or the other, and a node carrying both is not valid against the schema.
+    """
+    pointer = getattr(feature, "p_" + which.lower(), None)
+    if pointer:
+        out.append("\t\t<p%s>%s</p%s>" % (which, pointer, which))
+        return
+    value = getattr(feature, which.lower())
+    if isinstance(feature, FloatFeature):
+        out.append("\t\t<%s>%s</%s>" % (which, repr(float(value)), which))
+    else:
+        out.append("\t\t<%s>%d</%s>" % (which, value, which))
 
 
 def _namespace(name, vocabulary=SFNC_FEATURES):
@@ -64,8 +86,8 @@ def _emit_feature(feature, out):
         out.append('\t<Integer Name="%s" NameSpace="%s">' % (name, _namespace(name)))
         out.append("\t\t<Description>%s</Description>" % description)
         out.append("\t\t<pValue>%s</pValue>" % reg)
-        out.append("\t\t<Min>%d</Min>" % feature.min)
-        out.append("\t\t<Max>%d</Max>" % feature.max)
+        _bound(feature, "Min", out)
+        _bound(feature, "Max", out)
         out.append("\t\t<Inc>%d</Inc>" % feature.inc)
         if feature.unit:
             out.append("\t\t<Unit>%s</Unit>" % escape(feature.unit))
@@ -80,8 +102,8 @@ def _emit_feature(feature, out):
         out.append('\t<Float Name="%s" NameSpace="%s">' % (name, _namespace(name)))
         out.append("\t\t<Description>%s</Description>" % description)
         out.append("\t\t<pValue>%s</pValue>" % reg)
-        out.append("\t\t<Min>%s</Min>" % repr(float(feature.min)))
-        out.append("\t\t<Max>%s</Max>" % repr(float(feature.max)))
+        _bound(feature, "Min", out)
+        _bound(feature, "Max", out)
         if feature.unit:
             out.append("\t\t<Unit>%s</Unit>" % escape(feature.unit))
         out.append("\t</Float>")
@@ -251,6 +273,33 @@ def validate_xml(xml_bytes, feature_set):
 
     if "Device" not in names:
         problems.append("missing <Port Name=\"Device\"/>")
+
+    # A pInvalidator or pMax naming something that does not exist gives a
+    # document the client rejects at parse time, which surfaces as a camera
+    # that cannot be opened at all rather than as one feature misbehaving.
+    # Catching it here turns a mistyped dependency into a startup error that
+    # names the feature.
+    for feature in feature_set.features:
+        for name in feature.invalidated_by:
+            if name not in feature_set.by_name:
+                problems.append("%s is invalidated by %r, which is not a "
+                                "declared feature" % (feature.name, name))
+        for which in ("p_min", "p_max"):
+            pointer = getattr(feature, which, None)
+            if pointer is None:
+                continue
+            target = feature_set.by_name.get(pointer)
+            if target is None:
+                problems.append("%s.%s names %r, which is not a declared "
+                                "feature" % (feature.name, which, pointer))
+            elif not isinstance(target, (IntFeature, FloatFeature)):
+                # <pMax> has to resolve to something with a value. Pointing
+                # it at a Command or an Enumeration parses and then fails in
+                # the client's node graph, well away from the cause.
+                problems.append("%s.%s names %r, which is a %s and carries "
+                                "no numeric value"
+                                % (feature.name, which, pointer,
+                                   type(target).__name__))
 
     # Every address in the document must match what the allocator assigned.
     for element in root.iter(tag + "IntReg"):

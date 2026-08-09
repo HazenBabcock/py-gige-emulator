@@ -281,6 +281,23 @@ class PiCamera(EmulatedCamera):
         IntFeature("BinningVertical", "Vertical binning; always follows "
                    "BinningHorizontal", "ImageFormatControl", "RW",
                    affects_payload=True, default=1, min=1, max=MAX_BINNING),
+        # The ceiling AcquisitionFrameRate is offered against, and a property
+        # of the sensor readout alone -- exposure never moves it. A long
+        # exposure drags the frame rate *value* down; what the sensor is
+        # capable of is unchanged, and a client whose slider shrank because
+        # someone lengthened an exposure would be showing a limit that does
+        # not exist.
+        #
+        # It does move when the readout does. Switching to the raw stream
+        # hands the binned size straight to the sensor and can select a
+        # different mode; RGB8 goes through the ISP, where a smaller main
+        # stream is fed by the same readout and the ceiling stays put.
+        FloatFeature("AcquisitionFrameRateMax",
+                     "Fastest frame rate the current sensor readout sustains",
+                     "AcquisitionControl", "RO",
+                     invalidated_by=("PixelFormat", "BinningHorizontal",
+                                     "BinningVertical"),
+                     default=0.0, min=0.0, max=1e4, unit="Hz"),
     )
 
     #: --pixel-format aliases. The Bayer layout's name depends on the
@@ -338,15 +355,32 @@ class PiCamera(EmulatedCamera):
         self._applied_pixel_format = None
         self._configure(width, height, pixel_format)
 
+        # The absolute ceiling, across every readout this sensor has -- the
+        # 1332x990 8 bit mode at ~148 fps. It is what validate() enforces and
+        # never changes; the reachable-right-now figure is
+        # AcquisitionFrameRateMax, wired up below.
         super().__init__(width=width, height=height,
                          pixel_format=pixel_format,
                          pixel_formats=formats, frame_rate=frame_rate,
+                         max_frame_rate=max(m.get("fps") or 0
+                                            for m in self.picam2.sensor_modes),
                          **kwds)
 
         # Narrow the declared maximum to what this sensor can actually do, so
         # a client cannot select a factor with no matching mode.
         for name in ("BinningHorizontal", "BinningVertical"):
             self.feature_set.by_name[name].max = max(self.binning_factors)
+
+        # Wired here rather than declared in the core, because neither
+        # relationship is true of cameras in general: a device with no
+        # exposure control has nothing to be invalidated by, and one with a
+        # single fixed readout has a constant ceiling that a literal <Max>
+        # states perfectly well.
+        rate = self.feature_set.by_name["AcquisitionFrameRate"]
+        rate.p_max = "AcquisitionFrameRateMax"
+        rate.invalidated_by = ("ExposureTime",)
+
+        self._refresh_frame_rate_ceiling()
 
         self.sink = _FrameSink(width, height, self._bytes_per_pixel())
         self.encoder = Encoder()
@@ -369,11 +403,47 @@ class PiCamera(EmulatedCamera):
         # the reconfigure silently never happens.
         self._applied_binning = 1
 
+        # What the client last *asked* for, which is not what self.settings
+        # holds. get_camera_settings() refreshes those from libcamera
+        # metadata, and that metadata lags: capture_metadata() blocks for a
+        # frame, so at 2 fps the exposure read back is up to a second old.
+        #
+        # Deciding the exposure/frame-rate conflict from those values makes
+        # the device chase itself. Observed: a client set a 10 ms exposure
+        # and then asked for 50 fps, which 10 ms allows comfortably -- but
+        # settings still reported the previous 500 ms exposure, so the device
+        # "resolved" a conflict that did not exist and *lengthened* the
+        # exposure to 20 ms. The constraint is between what was requested.
+        self._requested_exposure_us = float(
+            self.feature_set.by_name["ExposureTime"].default)
+        self._requested_rate = float(frame_rate)
+
     def _configure_raw(self, width, height):
         config = self.picam2.create_video_configuration(
             raw={"format": self.raw_format, "size": (width, height)})
         self.picam2.configure(config)
         return self.picam2.camera_configuration()["raw"]
+
+    def _refresh_frame_rate_ceiling(self):
+        """
+        Read the current readout's fastest frame rate out of libcamera.
+
+        FrameDurationLimits is the shortest and longest frame this
+        configuration allows, and its lower bound is the ceiling -- read from
+        the pipeline rather than looked up in the mode table, so it stays
+        right through a reconfigure without anything here tracking which mode
+        is selected. Measured against the table it agrees exactly: 101.68 fps
+        at 1332x990, 45.19 at 2028x1520, 11.72 at 4056x3040.
+        """
+        # _configure() runs once before super().__init__(), to find out what
+        # the pipeline actually delivers, so there is no settings dict yet on
+        # that first pass. __init__ calls this again once there is.
+        if getattr(self, "settings", None) is None:
+            return
+        limits = self.picam2.camera_controls.get("FrameDurationLimits")
+        if not limits or not limits[0]:
+            return
+        self.settings["AcquisitionFrameRateMax"] = 1e6 / limits[0]
 
     def _configure(self, width, height, pixel_format):
         """
@@ -394,6 +464,8 @@ class PiCamera(EmulatedCamera):
         self.picam2.configure(config)
         self.picam2.encode_stream_name = stream
         self._applied_pixel_format = pixel_format
+        # The readout may have changed, and with it the ceiling.
+        self._refresh_frame_rate_ceiling()
         return self.picam2.camera_configuration()[stream]
 
     def start(self):
@@ -541,12 +613,20 @@ class PiCamera(EmulatedCamera):
         if "ExposureTime" in changed:
             exposure_us = int(changed["ExposureTime"])
             controls["ExposureTime"] = exposure_us
+            self._requested_exposure_us = float(exposure_us)
             # A frame cannot be shorter than its exposure, so a long exposure
             # has to drag the frame rate down with it or libcamera silently
             # clamps the exposure instead.
-            rate = self.settings.get("AcquisitionFrameRate", 10.0)
-            if exposure_us > 0 and rate > 1e6 / exposure_us:
-                controls["FrameRate"] = max(0.1, 1e6 / exposure_us)
+            #
+            # Only downwards, and only on conflict: shortening an exposure
+            # does not restore a frame rate the user never asked to change.
+            if exposure_us > 0 and self._requested_rate > 1e6 / exposure_us:
+                rate = max(0.1, 1e6 / exposure_us)
+                controls["FrameRate"] = rate
+                # The clamped rate is the rate now, so a later exposure
+                # change compares against it rather than against a request
+                # that has been overtaken.
+                self._requested_rate = rate
 
         if "Gain" in changed:
             controls["AnalogueGain"] = db_to_gain(changed["Gain"])
@@ -559,7 +639,22 @@ class PiCamera(EmulatedCamera):
             self._apply_pixel_format(changed["PixelFormat"])
 
         if "AcquisitionFrameRate" in changed:
-            controls["FrameRate"] = float(changed["AcquisitionFrameRate"])
+            rate = float(changed["AcquisitionFrameRate"])
+            controls["FrameRate"] = rate
+            # The mirror of the exposure branch above, and it was missing:
+            # the rate went straight to libcamera, which then quietly clamped
+            # one of the two and left the device believing both requests had
+            # been honoured.
+            #
+            # Only on conflict, and only downwards. A rate the current
+            # exposure cannot sustain shortens the exposure to fit; a rate
+            # well inside it leaves the exposure alone, because someone who
+            # asks for 5 fps has not asked for a longer exposure.
+            self._requested_rate = rate
+            if rate > 0 and self._requested_exposure_us > 1e6 / rate:
+                exposure_us = int(1e6 / rate)
+                controls["ExposureTime"] = exposure_us
+                self._requested_exposure_us = float(exposure_us)
 
         if controls:
             log.info("applying %s", controls)
@@ -574,7 +669,15 @@ class PiCamera(EmulatedCamera):
             # Reported so a client that set one axis sees the other follow.
             "BinningHorizontal": self.settings["BinningHorizontal"],
             "BinningVertical": self.settings["BinningVertical"],
+            "AcquisitionFrameRateMax": self.settings["AcquisitionFrameRateMax"],
         }
+        # The rate the sensor *achieved*, not the one it was asked for, which
+        # is the whole fix: a long exposure drags the rate down inside
+        # libcamera, and nothing here used to notice. The register kept the
+        # requested value, so every client -- GUI or not, cached or not --
+        # was told 10 Hz while the sensor ran at 2.
+        if metadata.get("FrameDuration"):
+            out["AcquisitionFrameRate"] = 1e6 / metadata["FrameDuration"]
         if "ExposureTime" in metadata:
             out["ExposureTime"] = float(metadata["ExposureTime"])
         if "AnalogueGain" in metadata:

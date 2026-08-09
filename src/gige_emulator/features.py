@@ -127,6 +127,17 @@ class Feature:
     #: refused while streaming. GenICam calls the same idea TLParamsLocked.
     affects_payload: bool = False
 
+    #: Names of features whose change makes this one's stored value wrong.
+    #: Emitted as <pInvalidator>, which is the only thing that makes a client
+    #: re-read. Without it a GUI shows the value it fetched when it built its
+    #: property tree, however diligently the device updates the register --
+    #: the client has no reason to ask again.
+    #:
+    #: This is about a value moving on its own, not about a value being
+    #: writable. AcquisitionFrameRate is invalidated by ExposureTime because
+    #: a long exposure drags the achievable rate down with it.
+    invalidated_by: tuple = ()
+
     size = 4
     settable = True
 
@@ -147,6 +158,18 @@ class IntFeature(Feature):
     max: int = 0xFFFFFFFF
     inc: int = 1
     unit: str = ""
+
+    #: Name of another feature that supplies this one's bound at runtime.
+    #: Emitted as <pMin>/<pMax> in place of the literal, because GenICam
+    #: takes one or the other and never both.
+    #:
+    #: `min`/`max` stay meaningful when these are set: they are the widest
+    #: the device can ever go, and validate() still enforces them, while the
+    #: pointed-at feature carries what is reachable right now. A sensor whose
+    #: fastest mode does 147 fps has max=147 forever and a pMax that follows
+    #: whichever mode is selected.
+    p_min: str = None
+    p_max: str = None
 
     size = 4
 
@@ -170,6 +193,10 @@ class FloatFeature(Feature):
     min: float = 0.0
     max: float = 1e12
     unit: str = ""
+
+    #: See IntFeature.p_min. Same meaning, same reason min/max stay set.
+    p_min: str = None
+    p_max: str = None
 
     size = 8
 

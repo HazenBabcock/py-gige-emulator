@@ -196,6 +196,16 @@ will reconstruct.
   Genuine silence still releases it, which is the case that matters.
   `heartbeat_timeout_ms` (3000 by default) covers a client that goes quiet for
   a long time on purpose.
+* **Bounds can be computed, and changes can be pushed.** A feature's `min` and
+  `max` are what the device can *ever* do; `p_max="OtherFeature"` emits
+  `<pMax>` so the client's range tracks what is reachable now. `EmulatedCamera`
+  takes `max_frame_rate` for the common case of a sensor whose ceiling is
+  simply not 1000 fps. Separately, `invalidated_by=("ExposureTime",)` emits
+  `<pInvalidator>` on the register node, which is the only thing that makes a
+  client re-read: without it a GUI shows the value it fetched when it built
+  its tree, however faithfully the device updates the register. Use it when a
+  feature's value moves *on its own* — a long exposure dragging the frame rate
+  down — not merely when one is writable.
 * **`AcquisitionMode` is honoured.** `SingleFrame` delivers one frame per
   `AcquisitionStart` and then stops, so a snapshot client starts again for
   each one. Your `next_frame()` sees no difference between the two modes.

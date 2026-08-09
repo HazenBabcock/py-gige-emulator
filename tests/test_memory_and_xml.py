@@ -7,7 +7,8 @@ import pytest
 from gige_emulator import bootstrap, genicam_xml
 from gige_emulator import constants as c
 from gige_emulator.camera import EmulatedCamera
-from gige_emulator.features import (SFNC_CATEGORIES, EnumFeature, FeatureError,
+from gige_emulator.features import (SFNC_CATEGORIES, CommandFeature,
+                                    EnumFeature, FeatureError,
                                     FeatureSet, FloatFeature, IntFeature,
                                     StringFeature)
 from gige_emulator.memory import DeviceMemory, MemoryError_
@@ -394,6 +395,105 @@ def test_a_string_feature_is_allocated_and_declared_at_one_address():
     assert len(nodes) == 1
     assert int(nodes[0].find(tag + "Address").text, 0) == string.address
     assert int(nodes[0].find(tag + "Length").text) == 16
+
+
+def _build(features):
+    return ElementTree.fromstring(
+        genicam_xml.build_xml(features, "Model", "Vendor"))
+
+
+def test_a_dynamic_bound_replaces_the_literal_rather_than_joining_it():
+    """
+    GenICam takes <Max> or <pMax>, never both -- a node carrying the pair is
+    invalid against the schema, and a client that rejects the document
+    presents as a camera that cannot be opened at all.
+    """
+    features = FeatureSet()
+    features.add(FloatFeature("AcquisitionFrameRateMax", default=147.91,
+                              access="RO"))
+    features.add(FloatFeature("AcquisitionFrameRate", default=10.0,
+                              min=0.001, max=147.91,
+                              p_max="AcquisitionFrameRateMax"))
+    tag = "{%s}" % genicam_xml.SCHEMA_NS
+    node = [e for e in _build(features).iter(tag + "Float")
+            if e.get("Name") == "AcquisitionFrameRate"][0]
+
+    assert node.find(tag + "pMax").text == "AcquisitionFrameRateMax"
+    assert node.find(tag + "Max") is None
+    # The static minimum is untouched; only the bound that was pointed at
+    # becomes a reference.
+    assert node.find(tag + "Min") is not None
+
+
+def test_the_static_max_survives_as_the_absolute_bound():
+    """
+    p_max says what is reachable now; max stays what the device can ever do,
+    and is what validate() enforces. Dropping it would let a client write a
+    rate no mode supports whenever the pointed-at value was briefly stale.
+    """
+    feature = FloatFeature("AcquisitionFrameRate", default=10.0, min=0.001,
+                           max=147.91, p_max="AcquisitionFrameRateMax")
+    assert feature.validate(120.0) == 120.0
+    with pytest.raises(FeatureError):
+        feature.validate(500.0)
+
+
+def test_an_invalidator_lands_on_the_register_not_the_feature():
+    """
+    The cached value lives in the register node, so that is what has to be
+    invalidated. Marking the feature node alone leaves the register cache
+    intact and the client serves the same stale number straight back out.
+    """
+    features = FeatureSet()
+    features.add(FloatFeature("ExposureTime", default=10000.0))
+    features.add(FloatFeature("AcquisitionFrameRate", default=10.0,
+                              invalidated_by=("ExposureTime",)))
+    tag = "{%s}" % genicam_xml.SCHEMA_NS
+    root = _build(features)
+
+    reg = [e for e in root.iter(tag + "FloatReg")
+           if e.get("Name") == "AcquisitionFrameRateReg"][0]
+    assert reg.find(tag + "pInvalidator").text == "ExposureTimeReg"
+
+    node = [e for e in root.iter(tag + "Float")
+            if e.get("Name") == "AcquisitionFrameRate"][0]
+    assert node.find(tag + "pInvalidator") is None
+
+
+def test_a_dangling_dependency_is_caught_at_startup():
+    """
+    A mistyped name produces a document the client rejects at parse time,
+    which looks like a camera that cannot be opened rather than like one
+    feature being wrong.
+    """
+    features = FeatureSet()
+    features.add(FloatFeature("AcquisitionFrameRate", default=10.0,
+                              p_max="NoSuchFeature",
+                              invalidated_by=("AlsoMissing",)))
+    problems = genicam_xml.validate_xml(
+        genicam_xml.build_xml(features, "Model", "Vendor"), features)
+    assert any("NoSuchFeature" in p for p in problems)
+    assert any("AlsoMissing" in p for p in problems)
+
+
+def test_a_bound_pointing_at_something_valueless_is_caught():
+    features = FeatureSet()
+    features.add(CommandFeature("AcquisitionStart"))
+    features.add(FloatFeature("AcquisitionFrameRate", default=10.0,
+                              p_max="AcquisitionStart"))
+    problems = genicam_xml.validate_xml(
+        genicam_xml.build_xml(features, "Model", "Vendor"), features)
+    assert any("carries no numeric value" in p for p in problems)
+
+
+def test_a_camera_can_state_its_real_frame_rate_ceiling():
+    """
+    The default used to be a flat 1000 Hz for every camera ever built on this
+    class, and a client believes it -- arv-viewer offers 500 fps on a sensor
+    whose fastest readout is 147.
+    """
+    camera = DummyCamera(width=64, height=64, max_frame_rate=147.91)
+    assert camera.feature_set.by_name["AcquisitionFrameRate"].max == 147.91
 
 
 def test_payload_size_matches_the_geometry():
