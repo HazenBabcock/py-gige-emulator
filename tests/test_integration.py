@@ -287,6 +287,58 @@ def test_a_payload_feature_is_refused_while_acquiring(client, server):
     assert camera.settings["Binning"] == 4
 
 
+def test_pixel_format_is_writable_when_there_is_a_choice(client, server):
+    """
+    Advertising several formats on a read-only feature draws a populated
+    combo box in a viewer that refuses every selection. Either the choice is
+    real or it should not be offered.
+    """
+    camera = server.camera
+    pixel_format = camera.feature_set.by_name["PixelFormat"]
+    payload = camera.feature_set.by_name["PayloadSize"]
+    client.take_control()
+
+    assert pixel_format.access == "RW"
+    assert client.read_register(payload.address) == WIDTH * HEIGHT
+
+    client.write_register(pixel_format.address, c.PIXEL_FORMAT_MONO16)
+    assert camera.settings["PixelFormat"] == "Mono16"
+    # Two bytes a pixel now, and the client must see that without asking.
+    assert client.read_register(payload.address) == WIDTH * HEIGHT * 2
+
+
+def test_switching_pixel_format_changes_the_frames_that_follow(client, server):
+    camera = server.camera
+    client.take_control()
+    client.write_register(
+        camera.feature_set.by_name["PixelFormat"].address,
+        c.PIXEL_FORMAT_MONO16)
+
+    packet_size = client.open_stream()
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStart"].address, 1)
+    block_id, leader, data = client.receive_frame(packet_size)
+
+    assert leader["pixel_format"] == c.PIXEL_FORMAT_MONO16
+    assert len(data) == WIDTH * HEIGHT * 2
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStop"].address, 1)
+
+
+def test_pixel_format_is_read_only_with_nothing_to_choose():
+    """
+    A camera that can deliver one format has a genuinely read-only feature,
+    and saying so is better than accepting a write that changes nothing.
+    """
+    class OneFormat(EmulatedCamera):
+        def next_frame(self):
+            return b""
+
+    camera = OneFormat(width=8, height=8, pixel_format="Mono16",
+                       pixel_formats=["Mono16"])
+    assert camera.feature_set.by_name["PixelFormat"].access == "RO"
+
+
 def test_a_payload_feature_republishes_the_geometry(client, server):
     camera = server.camera
     client.take_control()

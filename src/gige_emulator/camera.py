@@ -83,8 +83,20 @@ class EmulatedCamera(object):
         add(IntFeature("Height", "Image height in pixels",
                        "ImageFormatControl", "RO", affects_payload=True,
                        default=height, min=1, max=sensor_height))
-        add(EnumFeature("PixelFormat", "Pixel format",
-                        "ImageFormatControl", "RO", affects_payload=True,
+        # Writable exactly when there is something to choose. Advertising
+        # several formats on a read-only feature is what this used to do, and
+        # a client then draws a populated combo box that refuses every
+        # selection -- arv-viewer builds its control panel from the feature
+        # names and does not grey out read-only ones, so the user gets a
+        # working-looking control and a write-protect error.
+        #
+        # Nothing else is needed to make the switch take effect:
+        # payload_size() already reads the format out of settings, the bridge
+        # already calls refresh_geometry() after a write, and
+        # affects_payload already refuses one mid-acquisition.
+        add(EnumFeature("PixelFormat", "Pixel format", "ImageFormatControl",
+                        "RW" if len(pixel_formats) > 1 else "RO",
+                        affects_payload=True,
                         entries={name: c.PIXEL_FORMAT_NAMES[name]
                                  for name in pixel_formats},
                         default=pixel_format))
