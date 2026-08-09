@@ -85,6 +85,13 @@ if __name__ == "__main__":
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--pixel-format", default="Mono8")
     parser.add_argument("--frame-rate", type=float, default=10.0)
+    parser.add_argument("--heartbeat-timeout", type=int, default=3000,
+                        metavar="MS",
+                        help="how long the device waits for a client to say "
+                             "something before releasing control. Any command "
+                             "counts, so raise this only for a client that "
+                             "goes quiet for a long time, not merely a slow "
+                             "one")
     parser.add_argument("--packet-size", type=int, default=1400)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -109,7 +116,8 @@ if __name__ == "__main__":
                                   vendor_name=args.vendor, model_name=args.model,
                                   serial_number=args.serial,
                                   user_defined_name=args.name,
-                                  packet_size=args.packet_size)
+                                  packet_size=args.packet_size,
+                              heartbeat_timeout_ms=args.heartbeat_timeout)
     except ValueError as e:
         parser.error(str(e))
     print("ctrl-c to exit.")

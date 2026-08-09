@@ -415,6 +415,43 @@ def test_control_expires_when_the_client_goes_quiet(server):
         assert server.control.has_control()
 
 
+def test_a_busy_client_keeps_control_without_ever_heartbeating(server):
+    """
+    The failure this prevents is a client being dropped mid-startup.
+
+    A client serialises control access behind one mutex and heartbeats on a
+    one second period, so a burst of feature reads -- enumerating everything
+    to build a property tree -- starves its own heartbeat. Counting only the
+    privilege read released control after three missed turns, on a client
+    that was plainly alive and talking to us the whole time.
+    """
+    features = server.camera.feature_set.by_name
+    with FakeClient(("127.0.0.1", PORT)) as busy:
+        busy.take_control()
+        # Well past the fixture's 1000 ms, and never once reading CCP.
+        deadline = time.monotonic() + 1.6
+        while time.monotonic() < deadline:
+            busy.read_register(features["GainRaw"].address)
+            time.sleep(0.05)
+        assert server.control.has_control(), (
+            "a client issuing register reads was treated as dead")
+        # And it really still owns it, rather than merely not being expired.
+        busy.write_register(features["GainRaw"].address, 9)
+        assert server.camera.settings["GainRaw"] == 9
+
+
+def test_silence_still_releases_control(server):
+    """
+    The other half: activity has to mean actual packets, or a crashed client
+    would hold the camera forever. Same duration as the busy client above.
+    """
+    with FakeClient(("127.0.0.1", PORT)) as quiet:
+        quiet.take_control()
+        assert server.control.has_control()
+        time.sleep(1.6)
+        assert not server.control.has_control()
+
+
 def test_get_camera_settings_is_called_on_a_feature_read(client, server):
     camera = server.camera
     before = camera.reads

@@ -165,6 +165,20 @@ class ControlChannel(object):
         with self.lock:
             write_access = (self.controller is None
                             or self.controller == address)
+            # Any command from the controller counts as a heartbeat, not just
+            # a read of the privilege register.
+            #
+            # The heartbeat exists to notice a client that has *died*, and one
+            # sending register reads plainly has not. Counting only the
+            # privilege read drops a client that is merely busy: a client
+            # serialises control access behind one mutex and heartbeats on a
+            # one second period, so while it enumerates features to build its
+            # property tree the heartbeat is queued behind that burst. Three
+            # missed turns and control is released mid-initialisation, which
+            # is what micro-manager hit on startup. Crash detection is
+            # unaffected, since a crashed client sends nothing at all.
+            if self.controller == address:
+                self.controller_time = time.monotonic()
 
         try:
             reply = self._dispatch(command, address, write_access)
@@ -194,10 +208,9 @@ class ControlChannel(object):
                 for a in addresses:
                     self.bridge.before_read(a, 4)
             with self.lock:
-                # A read of the privilege register is the client's heartbeat.
-                if c.BS_CONTROL_CHANNEL_PRIVILEGE in addresses:
-                    if self.controller == address:
-                        self.controller_time = time.monotonic()
+                # The privilege read is the client's nominal heartbeat, but
+                # handle() already refreshed the clock for any command from
+                # the controller, so there is nothing extra to do for it.
                 values = [self.memory.read_register(a) for a in addresses]
             return gvcp.encode_read_register_ack(command.packet_id, values)
 

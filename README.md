@@ -169,6 +169,15 @@ will reconstruct.
   only uses `READ_REGISTER` for 4 byte accesses; an 8 byte float or a string
   register always arrives as `READ_MEMORY`. Keying off the command gives hooks
   that fire for integers and silently never fire for floats.
+* **Any command counts as a heartbeat, not just the privilege read.** A
+  client that is talking to the device has obviously not crashed, and the
+  heartbeat exists to catch one that has. Counting only the nominal heartbeat
+  drops a client that is merely busy: clients serialise control access behind
+  one mutex and heartbeat on a one second period, so a burst of feature reads
+  at startup starves the heartbeat and control is released mid-initialisation.
+  Genuine silence still releases it, which is the case that matters.
+  `heartbeat_timeout_ms` (3000 by default) covers a client that goes quiet for
+  a long time on purpose.
 * **Geometry is latched at `AcquisitionStart`.** The client sizes its buffer
   from `PayloadSize` and then drops any packet past the count that implies,
   with no error, so changing width mid-stream would produce black frames and
