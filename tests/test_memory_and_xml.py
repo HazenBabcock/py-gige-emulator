@@ -114,12 +114,34 @@ def test_the_xml_url_is_hex_without_a_prefix():
     assert url == "Local:///camera.xml;10000;3f53"
 
 
-def test_resend_and_multipart_capability_bits_stay_clear():
+def test_packet_resend_is_advertised_and_nothing_else_is():
+    """
+    Aravis reads this register once at open and, finding the resend bit
+    clear, sets the stream to PACKET_RESEND_NEVER for the whole session --
+    so device-side support that is not advertised here is never reached.
+
+    The other bits stay clear because this device does not implement them,
+    and a claimed capability is worse than a missing one: the client uses it
+    and gets silence.
+    """
     memory = DeviceMemory()
     memory.set_genicam_xml(b"<x/>")
     bootstrap.init_bootstrap(memory, bootstrap.DeviceInfo(ip="10.0.0.1"), 4)
-    assert memory.peek_register(c.BS_GVCP_CAPABILITY) == 0
+    capability = memory.peek_register(c.BS_GVCP_CAPABILITY)
+    assert capability == c.GVCP_CAPABILITY_PACKET_RESEND
+    # Counted from the LSB, which is the opposite of the spec's tables. Bit
+    # 29 rather than bit 2 would advertise nothing this device does.
+    assert capability == 0x00000004
+    # The multipart bit lives on the stream channel and stays clear.
     assert memory.peek_register(c.BS_SC0_CAPABILITY) == 0
+
+
+def test_packet_resend_can_be_turned_off():
+    memory = DeviceMemory()
+    memory.set_genicam_xml(b"<x/>")
+    bootstrap.init_bootstrap(
+        memory, bootstrap.DeviceInfo(ip="10.0.0.1", packet_resend=False), 4)
+    assert memory.peek_register(c.BS_GVCP_CAPABILITY) == 0
 
 
 def test_device_mode_declares_the_endianness_it_actually_serves():

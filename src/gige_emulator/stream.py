@@ -48,8 +48,24 @@ IP_PMTUDISC_DO = 2
 
 class StreamChannel(object):
 
+    #: How long to keep answering resend requests after a frame's trailer has
+    #: gone out, before releasing it and asking the camera for the next one.
+    #:
+    #: There is no "frame complete" message in GigE Vision. A client speaks
+    #: only when something is missing, so silence means either that it has
+    #: everything or that its request is still in flight -- the device cannot
+    #: tell which, and has to wait long enough to be sure.
+    #:
+    #: 5 ms is generous rather than arbitrary. Aravis arms a missing packet
+    #: with ARV_GV_STREAM_INITIAL_PACKET_TIMEOUT_US_DEFAULT, which is 1 ms,
+    #: and the round trip on a wired link here is 0.4 ms. The clock restarts
+    #: on every request served, so a frame losing packets steadily keeps
+    #: being repaired; only quiet ends it.
+    RESEND_GUARD = 0.005
+
     def __init__(self, camera, memory, lock, device_ip,
-                 control=None, idle_poll=0.02, interface=None):
+                 control=None, idle_poll=0.02, interface=None,
+                 resend_guard=None):
         self.camera = camera
         self.memory = memory
         self.lock = lock
@@ -62,11 +78,27 @@ class StreamChannel(object):
         self.thread = None
         self.running = False
 
+        self.resend_guard = (self.RESEND_GUARD if resend_guard is None
+                             else resend_guard)
+
         self.frame_id = 0
         self.n_frames = 0
         self.n_packets = 0
         self.n_send_errors = 0
         self.n_test_packets = 0
+        self.n_resend_requests = 0
+        self.n_resent_packets = 0
+        self.n_resend_unavailable = 0
+
+        # The one frame a resend can still be served from, as
+        # (frame_id, data, geometry, packet_size, timestamp_ns).
+        #
+        # One frame, not a ring of them, because the sender never runs ahead:
+        # it finishes answering for a frame before asking the camera for the
+        # next. A ring would only be needed to pipeline, and pipelining is
+        # what would make a resend arrive for a frame already overwritten.
+        self._retained = None
+        self._last_resend = 0.0
 
     # --- lifecycle -------------------------------------------------------
 
@@ -204,6 +236,97 @@ class StreamChannel(object):
         self.n_test_packets += 1
         return True
 
+    # --- packet resend ---------------------------------------------------
+
+    #: Most a single request may ask for. Aravis asks for the contiguous run
+    #: it is missing, which is normally a handful; a request for the whole
+    #: frame would occupy the control thread for as long as sending one takes
+    #: and stall every GVCP command behind it, including the heartbeat.
+    MAX_RESEND_PACKETS = 2048
+
+    def resend(self, frame_id, first_id, last_id):
+        """
+        Re-send a run of packets, or say they are gone.
+
+        Runs on the control thread, because the request arrives on the
+        control channel and the client is waiting on the answer now -- it
+        gives up on the frame 100 ms after the first packet. Handing this to
+        the stream thread would put it behind a whole frame's send.
+        """
+        self.n_resend_requests += 1
+        sock = self.socket
+        if sock is None:
+            return False
+
+        with self.lock:
+            retained = self._retained
+            target = self._stream_target()
+        if target is None:
+            return False
+
+        if retained is None or retained[0] != frame_id:
+            # Answer rather than ignore: silence costs the client its whole
+            # retention timeout before it gives up on a frame we cannot
+            # complete anyway.
+            self.n_resend_unavailable += 1
+            try:
+                sock.sendto(gvsp.unavailable_packet(frame_id, first_id), target)
+            except OSError:
+                pass
+            return False
+
+        _, data, geometry, packet_size, timestamp_ns = retained
+
+        if last_id < first_id:
+            return False
+        count = last_id - first_id + 1
+        if count > self.MAX_RESEND_PACKETS:
+            log.warning("resend request for %d packets of frame %d truncated "
+                        "to %d", count, frame_id, self.MAX_RESEND_PACKETS)
+            last_id = first_id + self.MAX_RESEND_PACKETS - 1
+
+        sent = 0
+        for packet_id in range(first_id, last_id + 1):
+            datagram = gvsp.packet_by_id(data, packet_size, frame_id,
+                                         geometry, timestamp_ns, packet_id)
+            if datagram is None:
+                continue
+            try:
+                sock.sendto(datagram, target)
+            except OSError as e:
+                self.n_send_errors += 1
+                log.warning("resend failed: %s", e)
+                break
+            sent += 1
+
+        self.n_resent_packets += sent
+        # Restart the guard, so a frame that keeps losing packets keeps being
+        # repaired instead of being released on a fixed deadline.
+        self._last_resend = time.monotonic()
+        return sent > 0
+
+    def _await_resends(self):
+        """
+        Stay on the frame just sent until the client has been quiet for
+        resend_guard, then release it.
+
+        This is also the only pacing the stream has, and it is enough of one:
+        the loop cannot start the next frame until it has finished answering
+        for this one, so the send rate degrades to whatever the client can
+        actually take rather than running the link flat out.
+        """
+        deadline = time.monotonic() + self.resend_guard
+        while self.running:
+            now = time.monotonic()
+            if self._last_resend > 0.0:
+                deadline = max(deadline, self._last_resend + self.resend_guard)
+                self._last_resend = 0.0
+            if now >= deadline:
+                break
+            time.sleep(min(0.001, deadline - now))
+        with self.lock:
+            self._retained = None
+
     def _snapshot(self):
         """
         Take everything the burst needs under the lock, then let go of it.
@@ -262,6 +385,7 @@ class StreamChannel(object):
                 continue
 
             self._send_frame(frame, target, packet_size, packet_delay, geometry)
+            self._await_resends()
 
             # One frame per AcquisitionStart, and the send is over either
             # way. Stopping only on a successful send would turn a camera
@@ -313,6 +437,15 @@ class StreamChannel(object):
         sock = self.socket
         if sock is None or not self.running:
             return
+
+        # Retained before the first packet goes out, not after the last: the
+        # client arms a missing packet after 1 ms and asks while the burst is
+        # still in flight, so a frame that only became resendable once it had
+        # finished sending would miss most of the requests for it.
+        with self.lock:
+            self._retained = (frame_id, data, geometry, packet_size,
+                              timestamp_ns)
+            self._last_resend = 0.0
 
         ceiling = gvsp.max_datagram_size(packet_size)
         send = sock.sendto

@@ -2,6 +2,7 @@
 # End to end over loopback, with no Aravis and no second machine.
 #
 
+import struct
 import time
 import xml.etree.ElementTree as ElementTree
 
@@ -41,7 +42,12 @@ class PatternCamera(EmulatedCamera):
         self.frame_index = 0
 
     def pattern(self, index):
-        size = self.payload_size()
+        return self.pattern_for(index, self.payload_size())
+
+    @staticmethod
+    def pattern_for(index, size):
+        """The same pattern at an explicit size, so a test can regenerate it
+        for a frame it has reassembled without guessing the geometry."""
         return bytes(((i * 7 + index * 13) & 0xFF) for i in range(size))
 
     def next_frame(self):
@@ -297,6 +303,70 @@ def test_continuous_mode_is_unaffected(client, server):
         client.receive_frame(packet_size)
     assert server.camera.acquiring
     client.write_register(features["AcquisitionStop"].address, 1)
+
+
+def test_a_resent_packet_completes_the_frame_byte_for_byte(client, server):
+    """
+    The case resend exists for. A full resolution frame is ~17,000 packets,
+    and at a measured 0.03% loss essentially every one arrives with a hole;
+    without resend a single hole discards the whole frame.
+    """
+    camera = server.camera
+    client.take_control()
+    # Mono16 so the frame spans enough packets for a dropped one to be in the
+    # middle rather than at an edge. Before AcquisitionStart, because the
+    # geometry is latched there and the device refuses it afterwards.
+    client.write_register(
+        camera.feature_set.by_name["PixelFormat"].address,
+        c.PIXEL_FORMAT_MONO16)
+    packet_size = client.open_stream()
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStart"].address, 1)
+
+    block, leader, data = client.receive_frame_dropping(packet_size, [2, 3])
+
+    assert len(data) == WIDTH * HEIGHT * 2
+    # Byte for byte against the pattern the camera generated. A resent packet
+    # written at the wrong offset would still give the right length, and the
+    # client would call the frame complete -- so length alone proves nothing.
+    index = None
+    for candidate in range(camera.frame_index + 1):
+        if data == camera.pattern_for(candidate, len(data)):
+            index = candidate
+            break
+    assert index is not None, "reassembled frame matches no generated pattern"
+    assert server.stats["resent_packets"] >= 2
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStop"].address, 1)
+
+
+def test_a_resend_for_a_frame_already_released_says_so(client, server):
+    """
+    Silence would cost the client its whole retention timeout before it gave
+    up on a frame the device cannot complete anyway. The unavailable status
+    is what makes Aravis stop asking and move on.
+    """
+    camera = server.camera
+    client.take_control()
+    packet_size = client.open_stream()
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStart"].address, 1)
+    block, _, _ = client.receive_frame(packet_size)
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStop"].address, 1)
+    time.sleep(0.2)
+
+    before = server.stats["resend_unavailable"]
+    # A frame id that was never sent, so certainly not retained.
+    client.request_resend((block + 500) & 0xFFFF, 1, 4)
+    deadline = time.monotonic() + 2.0
+    while server.stats["resend_unavailable"] == before and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert server.stats["resend_unavailable"] == before + 1
+
+    status, block_id, infos = struct.unpack_from(
+        ">HHI", client.stream_socket.recv(packet_size), 0)
+    assert status == c.GVSP_PACKET_TYPE_UNAVAILABLE
 
 
 def test_a_packet_size_probe_is_answered_at_the_requested_size(client, server):

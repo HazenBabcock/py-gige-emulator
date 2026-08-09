@@ -245,9 +245,23 @@ class _FrameSink(Output):
         with self.condition:
             if self.frame is not None:
                 self.n_superseded += 1
-            # tobytes() rather than .data: the slice above is not contiguous,
-            # so .data would hand back the padded rows.
-            self.frame = image.tobytes()
+            # bytes(image.data), not image.tobytes(). Both strip the stride
+            # padding and both return exactly the same bytes -- but .data
+            # hands the strided memoryview to CPython's buffer protocol,
+            # which gathers it in C at 5486 MB/s, while tobytes() takes
+            # numpy's strided copy path at 147 MB/s. Measured on a Pi 5 with
+            # this sensor's 8128/8112 stride.
+            #
+            # The 37x is not the whole cost. At ~6 fps the slow path holds
+            # the GIL about 99% of the time, and the GVSP send loop is
+            # Python in this same interpreter -- so it gets what is left.
+            # Measured: a frame that takes 0.175 s to send with the camera
+            # idle took 4.85 s with it running, which is 0.2 fps.
+            #
+            # This line previously carried a comment claiming .data "would
+            # hand back the padded rows". It does not; the two outputs are
+            # byte-identical. That one wrong sentence cost a factor of 27.
+            self.frame = bytes(image.data)
             self.frame_count += 1
             # picamera2's timestamp is int microseconds, rebased so the first
             # frame of the encoder run is zero.
@@ -732,6 +746,15 @@ if __name__ == "__main__":
                              "one")
     parser.add_argument("--packet-size", type=int, default=1400,
                         help="raise this with the MTU if you have jumbo frames")
+    parser.add_argument("--resend-guard", type=float, default=None,
+                        metavar="SECONDS",
+                        help="how long to keep answering packet resend "
+                             "requests for a frame after its last packet has "
+                             "gone out. A full resolution frame is ~17000 "
+                             "packets and takes ~0.2 s to send, so a client "
+                             "can still be asking about its start well after "
+                             "its end; raise this if a client reports "
+                             "resends being refused")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -799,7 +822,8 @@ if __name__ == "__main__":
                                   serial_number=args.serial,
                                   user_defined_name=args.name,
                                   packet_size=args.packet_size,
-                              heartbeat_timeout_ms=args.heartbeat_timeout)
+                                  resend_guard=args.resend_guard,
+                                  heartbeat_timeout_ms=args.heartbeat_timeout)
     except ValueError as e:
         parser.error(str(e))
     print("serving %dx%d %s (%.1f MB/frame), ctrl-c to exit.\n"

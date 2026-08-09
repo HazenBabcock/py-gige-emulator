@@ -50,6 +50,20 @@ ERROR_GENERIC = 0xFF
 # anything larger itself.
 GVCP_DATA_SIZE_MAX = 512
 
+# Bits in the GVCP capability register at 0x0934.
+#
+# Numbered from the LSB, which is the opposite of how the GigE Vision tables
+# read: the spec calls packet resend "bit 29", counting from the MSB of a big
+# endian word, and that is the same bit as 1 << 2 here. Aravis's own constants
+# agree (arvgvcpprivate.h, ARV_GVBS_GVCP_CAPABILITY_PACKET_RESEND is 1 << 2)
+# because it reads the register as a u32 and masks. Taking the spec's number
+# literally sets bit 29, which advertises nothing this device does and leaves
+# resend off -- a client then never asks, and a lost packet still costs a
+# whole frame.
+GVCP_CAPABILITY_CONCATENATION = 1 << 0
+GVCP_CAPABILITY_WRITE_MEMORY = 1 << 1
+GVCP_CAPABILITY_PACKET_RESEND = 1 << 2
+
 # --- Bootstrap register map ----------------------------------------------
 
 BS_VERSION = 0x0000

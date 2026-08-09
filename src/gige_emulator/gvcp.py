@@ -124,6 +124,24 @@ def decode_read_memory(payload):
     return address, count & 0xFFFF
 
 
+def decode_packet_resend(payload):
+    """
+    Returns (frame_id, first_packet_id, last_packet_id), inclusive.
+
+    Three big endian u32 without extended ids: the frame id, then the first
+    and last missing packet, each carrying only 24 valid bits. The extended
+    form is five words and puts a 64 bit frame id last; this device does not
+    advertise extended ids, so a client asking for one is out of spec and
+    the length check below refuses it rather than silently misreading the
+    fields as the short form.
+    """
+    if len(payload) < 12:
+        raise MalformedPacket("packet resend payload must be at least 12 bytes")
+    frame_id, first, last = struct.unpack_from(">III", payload, 0)
+    return (frame_id & 0xFFFF, first & c.GVSP_PACKET_ID_MASK,
+            last & c.GVSP_PACKET_ID_MASK)
+
+
 def decode_write_memory(payload):
     if len(payload) < 4:
         raise MalformedPacket("write memory payload must be at least 4 bytes")

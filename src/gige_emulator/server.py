@@ -25,7 +25,7 @@ class GigECameraServer(object):
                  gvcp_port=c.GVCP_PORT, bind_address="",
                  packet_size=c.DEFAULT_PACKET_SIZE,
                  heartbeat_timeout_ms=3000, validate=True,
-                 compress_xml=True):
+                 compress_xml=True, packet_resend=True, resend_guard=None):
 
         if interface is not None:
             ip, netmask, mac = netif.interface_info(interface)
@@ -77,7 +77,7 @@ class GigECameraServer(object):
             serial_number=serial_number, user_defined_name=user_defined_name,
             xml_filename=xml_filename,
             heartbeat_timeout_ms=heartbeat_timeout_ms,
-            packet_size=packet_size)
+            packet_size=packet_size, packet_resend=packet_resend)
         bootstrap.init_bootstrap(self.memory, self.info, xml_size)
 
         self.bridge = FeatureBridge(camera, self.memory, self.lock)
@@ -90,15 +90,22 @@ class GigECameraServer(object):
         self.control = ControlChannel(
             self.memory, self.lock, port=gvcp_port, bind_address=bind_address,
             bridge=self.bridge, on_control_change=self._on_control_change,
-            interface=interface, on_test_packet=self._on_test_packet)
+            interface=interface, on_test_packet=self._on_test_packet,
+            on_packet_resend=self._on_packet_resend)
         self.stream = StreamChannel(camera, self.memory, self.lock, ip,
-                                    control=self.control, interface=interface)
+                                    control=self.control, interface=interface,
+                                    resend_guard=resend_guard)
 
     def _on_test_packet(self, packet_size, do_not_fragment):
         # Bound late rather than passed as self.stream.send_test_packet,
         # because the control channel is built before the stream channel
         # exists.
         self.stream.send_test_packet(packet_size, do_not_fragment)
+
+    def _on_packet_resend(self, frame_id, first_id, last_id):
+        # Bound late, like _on_test_packet: the control channel is built
+        # before the stream channel that owns the frame and the socket.
+        self.stream.resend(frame_id, first_id, last_id)
 
     def _on_control_change(self, has_control):
         if not has_control:
@@ -156,6 +163,9 @@ class GigECameraServer(object):
             "frames": self.stream.n_frames,
             "packets": self.stream.n_packets,
             "test_packets": self.stream.n_test_packets,
+            "resend_requests": self.stream.n_resend_requests,
+            "resent_packets": self.stream.n_resent_packets,
+            "resend_unavailable": self.stream.n_resend_unavailable,
             "send_errors": self.stream.n_send_errors,
             "has_control": self.control.has_control(),
             "acquiring": self.camera.acquiring,

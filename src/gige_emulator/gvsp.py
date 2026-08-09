@@ -124,6 +124,52 @@ def packetize(frame_data, packet_size, frame_id, geometry, timestamp_ns):
     yield trailer(frame_id, packet_id, geometry["height"])
 
 
+def packet_by_id(frame_data, packet_size, frame_id, geometry, timestamp_ns,
+                 packet_id):
+    """
+    Rebuild one datagram of a frame by its packet id, for a resend.
+
+    Deliberately derived from the same arithmetic packetize() uses rather
+    than from a stored copy of the packets. A resent packet that does not
+    land at the offset the client computes from its id is worse than no
+    resend at all -- the client accepts it, writes it to the wrong place and
+    reports the frame complete, so the corruption is silent.
+
+    Returns None for an id this frame does not have, which the caller
+    answers with unavailable_packet().
+    """
+    per_packet = data_bytes_per_packet(packet_size)
+    if per_packet <= 0:
+        return None
+    n_payload = packet_count(len(frame_data), packet_size)
+
+    if packet_id == 0:
+        return leader(frame_id, timestamp_ns, geometry["pixel_format"],
+                      geometry["width"], geometry["height"])
+    if packet_id == n_payload + 1:
+        return trailer(frame_id, packet_id, geometry["height"])
+    if 1 <= packet_id <= n_payload:
+        offset = (packet_id - 1) * per_packet
+        view = memoryview(frame_data)
+        return payload(frame_id, packet_id, view[offset:offset + per_packet])
+    return None
+
+
+def unavailable_packet(frame_id, packet_id):
+    """
+    Tell the client the packet it asked for is gone.
+
+    Silence would do the same job far more slowly: the client retries until
+    it hits its own retention timeout. This status is read as an error, and
+    Aravis reacts to this particular one by setting disable_resend_request
+    for the frame -- so it stops asking for a frame the device no longer
+    holds and moves on to the next.
+    """
+    return _HEADER.pack(c.GVSP_PACKET_TYPE_UNAVAILABLE, frame_id,
+                        (c.GVSP_CONTENT_PAYLOAD << 24)
+                        | (packet_id & c.GVSP_PACKET_ID_MASK))
+
+
 def max_datagram_size(packet_size):
     """
     The client's receive buffer is exactly packet_size - 28 bytes and it

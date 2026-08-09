@@ -28,7 +28,7 @@ class ControlChannel(object):
 
     def __init__(self, memory, lock, port=c.GVCP_PORT, bind_address="",
                  on_control_change=None, bridge=None, interface=None,
-                 on_test_packet=None):
+                 on_test_packet=None, on_packet_resend=None):
         self.memory = memory
         self.lock = lock
         self.port = port
@@ -39,6 +39,9 @@ class ControlChannel(object):
         # device to fire a test packet. Wired to the stream channel, which is
         # the only thing here holding a GVSP socket.
         self.on_test_packet = on_test_packet
+        # Called with (frame_id, first_packet_id, last_packet_id). Wired to
+        # the stream channel, which holds both the frame and the socket.
+        self.on_packet_resend = on_packet_resend
 
         # The bridge runs user code, so it is always called with the lock
         # released -- a slow camera must not be able to stall the stream
@@ -264,9 +267,15 @@ class ControlChannel(object):
             return gvcp.encode_write_memory_ack(command.packet_id, addr)
 
         if cmd == c.CMD_PACKET_RESEND:
-            # Never requested, because the resend capability bit is clear.
-            # Arriving here means a client ignored that, and the honest
-            # answer is silence rather than a bogus ack.
+            # No ack, ever. Aravis sends this command without the
+            # ack-required flag (arvgvcp.c), so it is waiting for the packets
+            # themselves on the stream channel, not for a reply here --
+            # answering on the control channel would be one more datagram it
+            # ignores while the frame it needs times out.
+            frame_id, first_id, last_id = gvcp.decode_packet_resend(
+                command.payload)
+            if self.on_packet_resend is not None:
+                self.on_packet_resend(frame_id, first_id, last_id)
             return b""
 
         raise MemoryError_("unimplemented command 0x%04x" % cmd,

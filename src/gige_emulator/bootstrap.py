@@ -29,6 +29,10 @@ class DeviceInfo:
     xml_filename: str = "camera.xml"
     heartbeat_timeout_ms: int = 3000
     packet_size: int = c.DEFAULT_PACKET_SIZE
+    #: Advertise packet resend. Off makes the device behave as it did before
+    #: resend existed, which is the comparison to make when a client
+    #: misbehaves rather than merely loses packets.
+    packet_resend: bool = True
 
     def __post_init__(self):
         if self.manufacturer_name in c.RESERVED_VENDOR_NAMES:
@@ -85,9 +89,17 @@ def init_bootstrap(memory, info, xml_size):
     memory.poke_register(c.BS_N_MESSAGE_CHANNELS, 0)
     memory.poke_register(c.BS_N_STREAM_CHANNELS, 1)
 
-    # Left at zero deliberately. Bit 2 would advertise packet resend, which
-    # this device does not implement; with it clear the client never asks.
-    memory.poke_register(c.BS_GVCP_CAPABILITY, 0)
+    # Advertising packet resend is what makes a client ask for one. Aravis
+    # reads this register once at open and, finding the bit clear, sets the
+    # stream to PACKET_RESEND_NEVER for the whole session (arvgvdevice.c) --
+    # so with it off no amount of device-side support is ever exercised.
+    #
+    # It matters most exactly where it is least optional. A full resolution
+    # frame is 16,984 packets; at a measured 0.03% loss essentially every
+    # frame arrives with a hole, and without resend a single hole discards
+    # all 24.7 MB of it.
+    capability = c.GVCP_CAPABILITY_PACKET_RESEND if info.packet_resend else 0
+    memory.poke_register(c.BS_GVCP_CAPABILITY, capability)
 
     memory.poke_register(c.BS_HEARTBEAT_TIMEOUT, info.heartbeat_timeout_ms)
 

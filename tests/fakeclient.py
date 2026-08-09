@@ -169,6 +169,86 @@ class FakeClient(object):
         self.write_register(c.BS_SC0_PACKET_SIZE, packet_size)
         return packet_size
 
+    def request_resend(self, frame_id, first_id, last_id):
+        """
+        Ask for a run of packets back. No ack is expected -- the real client
+        sends this without the ack-required flag and waits for the packets
+        themselves on the stream channel.
+        """
+        payload = struct.pack(">III", frame_id, first_id, last_id)
+        data = gvcp.HEADER.pack(c.PACKET_TYPE_CMD, 0, c.CMD_PACKET_RESEND,
+                                len(payload), self._next_packet_id()) + payload
+        self.socket.sendto(data, self.device_address)
+
+    def receive_frame_dropping(self, packet_size, drop_ids, timeout=5.0):
+        """
+        Reassemble a frame while pretending some packets never arrived, then
+        recover them by resend.
+
+        The drops are simulated rather than induced, because a test that
+        waited for real loss would be a test of the network. What is under
+        test is that a resent packet is byte-identical to the original and
+        lands at the offset the client computes from its id -- a resend that
+        is merely present but shifted is worse than none, since the client
+        reports the frame complete and the corruption is silent.
+        """
+        per_packet = packet_size - c.GVSP_PROTOCOL_OVERHEAD
+        deadline = time.monotonic() + timeout
+        chunks, leader_info, trailer_id = {}, None, None
+        dropped = set(drop_ids)
+        block = None
+        asked = False
+
+        while time.monotonic() < deadline:
+            try:
+                data, _ = self.stream_socket.recvfrom(packet_size)
+            except socket.timeout:
+                continue
+            status, block_id, infos = struct.unpack_from(">HHI", data, 0)
+            if status != 0:
+                raise FakeClientError("device reported GVSP status 0x%04x"
+                                      % status)
+            content = (infos >> 24) & 0x7F
+            packet_id = infos & c.GVSP_PACKET_ID_MASK
+            if block is None:
+                block = block_id
+            elif block_id != block:
+                continue
+
+            if content == c.GVSP_CONTENT_LEADER:
+                fields = struct.unpack_from(">HHIIIIIIIHH", data, 8)
+                leader_info = {"pixel_format": fields[4], "width": fields[5],
+                               "height": fields[6]}
+            elif content == c.GVSP_CONTENT_TRAILER:
+                trailer_id = packet_id
+            elif packet_id in dropped:
+                continue                      # pretend it never arrived
+            else:
+                chunks[packet_id] = data[8:]
+
+            if trailer_id is None:
+                continue
+            expected = trailer_id - 1
+            missing = [i for i in range(1, expected + 1) if i not in chunks]
+            if missing and not asked:
+                asked = True
+                dropped.clear()               # accept them the second time
+                self.request_resend(block, min(missing), max(missing))
+                continue
+            if missing:
+                continue
+
+            out = bytearray()
+            for pid in range(1, expected + 1):
+                if (pid - 1) * per_packet != len(out):
+                    raise FakeClientError(
+                        "packet %d would land at %d, expected %d"
+                        % (pid, (pid - 1) * per_packet, len(out)))
+                out += chunks[pid]
+            return block, leader_info, bytes(out)
+
+        raise FakeClientError("frame not completed within %.1f s" % timeout)
+
     def receive_frame(self, packet_size, timeout=5.0):
         """
         Reassemble one complete frame, using the client's own offset rule.
