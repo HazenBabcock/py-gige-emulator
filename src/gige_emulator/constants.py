@@ -173,6 +173,25 @@ PIXEL_FORMAT_MONO16 = 0x01100007
 PIXEL_FORMAT_RGB8 = 0x02180014
 PIXEL_FORMAT_BGR8 = 0x02180015
 
+# Bayer. A colour sensor's raw output is a mosaic, and labelling it Mono is
+# not a harmless approximation -- the client renders a checkerboard and has no
+# way to know there is colour to recover. The two letters are the top-left 2x2
+# phase, so they change with sensor rotation and must be read from whatever
+# the camera reports rather than assumed. Values checked against Aravis's
+# arvenums.h.
+PIXEL_FORMAT_BAYER_GR8 = 0x01080008
+PIXEL_FORMAT_BAYER_RG8 = 0x01080009
+PIXEL_FORMAT_BAYER_GB8 = 0x0108000A
+PIXEL_FORMAT_BAYER_BG8 = 0x0108000B
+PIXEL_FORMAT_BAYER_GR12 = 0x01100010
+PIXEL_FORMAT_BAYER_RG12 = 0x01100011
+PIXEL_FORMAT_BAYER_GB12 = 0x01100012
+PIXEL_FORMAT_BAYER_BG12 = 0x01100013
+PIXEL_FORMAT_BAYER_GR16 = 0x0110002E
+PIXEL_FORMAT_BAYER_RG16 = 0x0110002F
+PIXEL_FORMAT_BAYER_GB16 = 0x01100030
+PIXEL_FORMAT_BAYER_BG16 = 0x01100031
+
 PIXEL_FORMAT_NAMES = {
     "Mono8": PIXEL_FORMAT_MONO8,
     "Mono10": PIXEL_FORMAT_MONO10,
@@ -180,6 +199,18 @@ PIXEL_FORMAT_NAMES = {
     "Mono16": PIXEL_FORMAT_MONO16,
     "RGB8": PIXEL_FORMAT_RGB8,
     "BGR8": PIXEL_FORMAT_BGR8,
+    "BayerGR8": PIXEL_FORMAT_BAYER_GR8,
+    "BayerRG8": PIXEL_FORMAT_BAYER_RG8,
+    "BayerGB8": PIXEL_FORMAT_BAYER_GB8,
+    "BayerBG8": PIXEL_FORMAT_BAYER_BG8,
+    "BayerGR12": PIXEL_FORMAT_BAYER_GR12,
+    "BayerRG12": PIXEL_FORMAT_BAYER_RG12,
+    "BayerGB12": PIXEL_FORMAT_BAYER_GB12,
+    "BayerBG12": PIXEL_FORMAT_BAYER_BG12,
+    "BayerGR16": PIXEL_FORMAT_BAYER_GR16,
+    "BayerRG16": PIXEL_FORMAT_BAYER_RG16,
+    "BayerGB16": PIXEL_FORMAT_BAYER_GB16,
+    "BayerBG16": PIXEL_FORMAT_BAYER_BG16,
 }
 
 

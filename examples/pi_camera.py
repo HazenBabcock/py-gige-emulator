@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from gige_emulator import (EmulatedCamera, Frame, FloatFeature,
                            GigECameraServer, IntFeature, netif)
+from gige_emulator import constants as c
 
 log = logging.getLogger("pi_camera")
 
@@ -66,6 +67,31 @@ def db_to_gain(db):
 
 
 IMX477_MAX_GAIN_DB = gain_to_db(IMX477_MAX_ANALOGUE_GAIN)
+
+# This is a colour sensor. Every mode it offers is Bayer -- there is no mono
+# mode at all -- so serving the raw stream as Mono is not an approximation,
+# it hands the client a mosaic labelled as greyscale. A capture at 2028x1520
+# splits by 2x2 phase into means of 9565 / 25297 / 25378 / 17283: the two
+# equal ones are the greens, and the spread is 82% of the mean.
+#
+# The phase is read from the configuration rather than assumed. The sensor is
+# physically RGGB, but this camera reports Rotation: 180 and libcamera hands
+# back SBGGR16 -- assuming the sensor's native phase would swap the client's
+# red and blue. libcamera also treats the requested format as a hint: asking
+# for SRGGB12, SRGGB10 or SRGGB8 all return SBGGR16 on a Pi 5, so what was
+# asked for says nothing about what arrives.
+LIBCAMERA_BAYER_TO_GENICAM = {
+    "SBGGR8": "BayerBG8", "SGBRG8": "BayerGB8",
+    "SGRBG8": "BayerGR8", "SRGGB8": "BayerRG8",
+    "SBGGR16": "BayerBG16", "SGBRG16": "BayerGB16",
+    "SGRBG16": "BayerGR16", "SRGGB16": "BayerRG16",
+}
+
+# libcamera's three-byte format names describe the word, not the byte order,
+# so they read backwards: "BGR888" is R,G,B in memory and is what GenICam
+# calls RGB8. Verified on an IMX477 by checking which byte tracked the raw
+# Bayer red plane, not taken from the documentation.
+LIBCAMERA_RGB8 = "BGR888"
 
 # Binning here is not binning.
 #
@@ -120,10 +146,11 @@ class _FrameSink(Output):
     a stream that has fallen behind wants the newest frame, not a backlog.
     """
 
-    def __init__(self, width, height, **kwds):
+    def __init__(self, width, height, bytes_per_pixel, **kwds):
         super().__init__(**kwds)
         self.width = width
         self.height = height
+        self.row_bytes = width * bytes_per_pixel
         self.condition = threading.Condition()
         self.frame = None
         self.frame_count = 0
@@ -132,11 +159,13 @@ class _FrameSink(Output):
 
     def outputframe(self, frame, keyframe=True, timestamp=None, packet=None,
                     audio=False):
-        # The raw buffer is padded to the sensor's stride, so it is wider
-        # than the image. Reshaping to the real row length and slicing the
-        # first 2*width bytes drops the padding; 2 because Mono16.
+        # The buffer is padded to the stream's stride, so it is wider than
+        # the image. Reshaping to the real row length and keeping the first
+        # row_bytes drops the padding. That width follows the pixel format --
+        # three bytes for RGB8, two for 16 bit Bayer -- and hardcoding two
+        # silently truncated or overran every other format.
         image = np.frombuffer(frame, dtype=np.uint8)
-        image = np.reshape(image, (self.height, -1))[:, :2 * self.width]
+        image = np.reshape(image, (self.height, -1))[:, :self.row_bytes]
 
         with self.condition:
             if self.frame is not None:
@@ -192,10 +221,29 @@ class PiCamera(EmulatedCamera):
         log.info("usable binning factors for %dx%d: %s",
                  width, height, self.binning_factors)
 
-        self._configure(width, height)
+        # Configure the raw stream once to find out what the pipeline
+        # actually delivers, since the requested format is only a hint.
+        raw_actual = self._configure_raw(width, height)
+        self.bayer_format = LIBCAMERA_BAYER_TO_GENICAM.get(raw_actual["format"])
+        if self.bayer_format is None:
+            log.warning("raw stream is %r, which is not a Bayer layout this "
+                        "example can label; offering RGB8 only",
+                        raw_actual["format"])
+        else:
+            log.info("raw stream is %s -> %s", raw_actual["format"],
+                     self.bayer_format)
 
-        super().__init__(width=width, height=height, pixel_format="Mono16",
-                         pixel_formats=["Mono16"], frame_rate=frame_rate,
+        # RGB8 first, so it is the default. The ISP demosaics with the
+        # sensor's own tuning file, which is a better picture than a client
+        # will reconstruct, and it is what someone pointing a viewer at a
+        # colour camera expects to see. Raw Bayer stays available for anyone
+        # doing their own processing.
+        formats = ["RGB8"] + ([self.bayer_format] if self.bayer_format else [])
+        self._applied_pixel_format = None
+        self._configure(width, height, "RGB8")
+
+        super().__init__(width=width, height=height, pixel_format="RGB8",
+                         pixel_formats=formats, frame_rate=frame_rate,
                          **kwds)
 
         # Narrow the declared maximum to what this sensor can actually do, so
@@ -203,16 +251,7 @@ class PiCamera(EmulatedCamera):
         for name in ("BinningHorizontal", "BinningVertical"):
             self.feature_set.by_name[name].max = max(self.binning_factors)
 
-        # AeEnable has to go off or the auto-exposure algorithm fights every
-        # exposure the client sets.
-        self.picam2.set_controls({
-            "AeEnable": False,
-            "ExposureTime": int(self.settings["ExposureTime"]),
-            "AnalogueGain": db_to_gain(self.settings["Gain"]),
-            "FrameRate": frame_rate,
-        })
-
-        self.sink = _FrameSink(width, height)
+        self.sink = _FrameSink(width, height, self._bytes_per_pixel())
         self.encoder = Encoder()
         self.started = False
 
@@ -233,14 +272,36 @@ class PiCamera(EmulatedCamera):
         # the reconfigure silently never happens.
         self._applied_binning = 1
 
-    def _configure(self, width, height):
+    def _configure_raw(self, width, height):
         config = self.picam2.create_video_configuration(
             raw={"format": self.raw_format, "size": (width, height)})
         self.picam2.configure(config)
-        self.picam2.encode_stream_name = "raw"
+        return self.picam2.camera_configuration()["raw"]
+
+    def _configure(self, width, height, pixel_format):
+        """
+        Point the encoder at whichever stream that format comes from.
+
+        RGB8 is the ISP's processed output; anything else is the sensor's raw
+        Bayer. They are different streams, not different encodings of one, so
+        switching format means reconfiguring rather than reinterpreting.
+        """
+        if pixel_format == "RGB8":
+            config = self.picam2.create_video_configuration(
+                main={"format": LIBCAMERA_RGB8, "size": (width, height)})
+            stream = "main"
+        else:
+            config = self.picam2.create_video_configuration(
+                raw={"format": self.raw_format, "size": (width, height)})
+            stream = "raw"
+        self.picam2.configure(config)
+        self.picam2.encode_stream_name = stream
+        self._applied_pixel_format = pixel_format
+        return self.picam2.camera_configuration()[stream]
 
     def start(self):
         self.picam2.start()
+        self._apply_controls()
         self.picam2.start_encoder(self.encoder, self.sink)
         self.started = True
         if self._metadata_thread is None:
@@ -273,6 +334,57 @@ class PiCamera(EmulatedCamera):
             # these when a user is looking at them.
             time.sleep(0.5)
 
+    def _apply_controls(self):
+        """
+        Push the current settings at libcamera.
+
+        Controls do not survive a stop/reconfigure/start cycle, so this runs
+        again after every restart. Missing it is not subtle once you know
+        where to look but is invisible from the outside: a binning or pixel
+        format change silently reverts to auto exposure and a free running
+        sensor. On the raw stream that is 23.5 fps against the 5 asked for,
+        and the stream thread then packetises ~100k packets a second on a
+        Pi, starving the GVCP thread until the client's heartbeat expires --
+        which looks like the camera refusing to stream rather than like a
+        lost control.
+
+        AeEnable goes off first, or the auto-exposure algorithm fights every
+        exposure the client sets.
+        """
+        self.picam2.set_controls({
+            "AeEnable": False,
+            "ExposureTime": int(self.settings["ExposureTime"]),
+            "AnalogueGain": db_to_gain(self.settings["Gain"]),
+            "FrameRate": float(self.settings["AcquisitionFrameRate"]),
+        })
+
+    def _bytes_per_pixel(self):
+        return c.bits_per_pixel(self.pixel_format_value()) // 8
+
+    def _apply_pixel_format(self, name):
+        """
+        Switch between the ISP stream and the raw one.
+
+        Only reachable while stopped, because PixelFormat affects the payload
+        and the emulator refuses those writes during acquisition.
+        """
+        width = self.settings["Width"]
+        height = self.settings["Height"]
+
+        was_started = self.started
+        if was_started:
+            self.picam2.stop_encoder()
+            self.picam2.stop()
+            self.started = False
+
+        actual = self._configure(width, height, name)
+        self.sink = _FrameSink(width, height, self._bytes_per_pixel())
+
+        if was_started:
+            self.start()
+        log.info("pixel format -> %s (libcamera %s, stride %d)",
+                 name, actual["format"], actual["stride"])
+
     def _apply_binning(self, factor):
         """
         Reconfigure to a smaller stream. Only reachable when acquisition is
@@ -288,8 +400,8 @@ class PiCamera(EmulatedCamera):
             self.picam2.stop()
             self.started = False
 
-        self._configure(width, height)
-        self.sink = _FrameSink(width, height)
+        self._configure(width, height, self.settings["PixelFormat"])
+        self.sink = _FrameSink(width, height, self._bytes_per_pixel())
 
         self._applied_binning = factor
         self.settings["BinningHorizontal"] = factor
@@ -341,6 +453,13 @@ class PiCamera(EmulatedCamera):
 
         if "Gain" in changed:
             controls["AnalogueGain"] = db_to_gain(changed["Gain"])
+
+        # Same trap as binning: self.settings is updated before this hook
+        # runs, so the requested value has to be compared against what the
+        # camera is actually configured for.
+        if ("PixelFormat" in changed
+                and changed["PixelFormat"] != self._applied_pixel_format):
+            self._apply_pixel_format(changed["PixelFormat"])
 
         if "AcquisitionFrameRate" in changed:
             controls["FrameRate"] = float(changed["AcquisitionFrameRate"])
