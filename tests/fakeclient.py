@@ -83,6 +83,9 @@ class FakeClient(object):
             "manufacturer": _string(payload, 0x48, 32),
             "model": _string(payload, 0x68, 32),
             "serial": _string(payload, 0xD8, 16),
+            # Not part of the device id, which is why a client lists this
+            # camera as vendor-model-serial no matter what it is set to.
+            "user_defined_name": _string(payload, 0xE8, 16),
         }
 
     def read_register(self, address):

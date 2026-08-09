@@ -96,6 +96,35 @@ def test_discovery_reports_the_device_identity(client):
     assert info["mac"] == bytes.fromhex("020000000001")
 
 
+def test_the_user_defined_name_reaches_the_discovery_ack():
+    """
+    It is the one identity field a client can select on but does not list --
+    the device id is always vendor-model-serial -- so a name that is working
+    is indistinguishable from one that was ignored unless you look here.
+    """
+    camera = PatternCamera(width=8, height=8, pixel_format="Mono8")
+    srv = GigECameraServer(camera, ip="127.0.0.1", netmask="255.0.0.0",
+                           model_name="PatternCam", serial_number="TEST-1",
+                           user_defined_name="bench-left",
+                           gvcp_port=PORT + 2, bind_address="127.0.0.1")
+    srv.start()
+    try:
+        with FakeClient(("127.0.0.1", PORT + 2)) as named:
+            info = named.discover()
+        assert info["user_defined_name"] == "bench-left"
+        # And it is genuinely separate from the id a client would list.
+        assert info["serial"] == "TEST-1"
+        assert info["model"] == "PatternCam"
+    finally:
+        srv.stop()
+
+
+def test_an_unset_user_defined_name_is_empty_not_missing(client):
+    # The shared fixture sets no name, and the field must still be there and
+    # readable rather than absent or full of stale bytes.
+    assert client.discover()["user_defined_name"] == ""
+
+
 def test_the_genicam_xml_downloads_and_parses(client, server):
     url, xml = client.fetch_genicam_xml()
     assert url.startswith("Local:///")

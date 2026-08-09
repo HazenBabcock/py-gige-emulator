@@ -91,10 +91,17 @@ class GigECameraServer(object):
     def start(self):
         port = self.control.start()
         self.stream.start()
-        log.info("%s listening on %s:%d as %s-%s-%s",
+        # The user-defined name is reported separately because it is not part
+        # of the device id, which is always vendor-model-serial. Clients list
+        # the id, so a name that is working looks like a name that was
+        # ignored unless something says otherwise.
+        log.info("%s listening on %s:%d as %s-%s-%s%s",
                  type(self.camera).__name__, self.ip, port,
                  self.info.manufacturer_name, self.info.model_name,
-                 self.info.serial_number)
+                 self.info.serial_number,
+                 (", user-defined name %r (select with this, not the id)"
+                  % self.info.user_defined_name)
+                 if self.info.user_defined_name else "")
         return self
 
     def stop(self):
