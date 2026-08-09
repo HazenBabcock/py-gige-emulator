@@ -74,9 +74,25 @@ class StreamChannel(object):
     #: frame period, which is a thing to measure before assuming.
     RESEND_GUARD = 0.0
 
+    #: Share of the link the stream is allowed to occupy.
+    #:
+    #: Not throttling for its own sake -- the remainder is what resends are
+    #: sent in. Sending flat out leaves none, so a lost run can only be
+    #: repaired by taking bandwidth from the next frame, which then loses a
+    #: run of its own. Measured at full resolution the stream saturates the
+    #: wire exactly (123 MB/s of a 123 MB/s link), so without a reservation
+    #: the first burst of loss is unrecoverable.
+    #:
+    #: Applied against the time the frame itself took, so it needs no idea
+    #: of the link's speed and follows it if it changes: a frame that took
+    #: 0.2 s to put on the wire is followed by 0.2 * (1/0.85 - 1) = 35 ms in
+    #: which the sender is quiet and the control thread can answer.
+    LINK_UTILISATION = 0.85
+
     def __init__(self, camera, memory, lock, device_ip,
                  control=None, idle_poll=0.02, interface=None,
-                 resend_guard=None, retain_frames=None):
+                 resend_guard=None, retain_frames=None,
+                 link_utilisation=None):
         self.camera = camera
         self.memory = memory
         self.lock = lock
@@ -93,6 +109,10 @@ class StreamChannel(object):
                              else resend_guard)
         self.retain_frames = max(1, self.RETAIN_FRAMES if retain_frames is None
                                  else retain_frames)
+        self.link_utilisation = min(1.0, max(0.05,
+                                    self.LINK_UTILISATION
+                                    if link_utilisation is None
+                                    else link_utilisation))
 
         self.frame_id = 0
         self.n_frames = 0
@@ -102,6 +122,7 @@ class StreamChannel(object):
         self.n_resend_requests = 0
         self.n_resent_packets = 0
         self.n_resend_unavailable = 0
+        self.n_resend_refused = 0
 
         # Recent frames a resend can still be served from, oldest first, each
         # (frame_id, data, geometry, packet_size, timestamp_ns).
@@ -254,11 +275,23 @@ class StreamChannel(object):
 
     # --- packet resend ---------------------------------------------------
 
-    #: Most a single request may ask for. Aravis asks for the contiguous run
-    #: it is missing, which is normally a handful; a request for the whole
-    #: frame would occupy the control thread for as long as sending one takes
-    #: and stall every GVCP command behind it, including the heartbeat.
-    MAX_RESEND_PACKETS = 2048
+    #: Largest share of a frame worth resending, before refusing the request
+    #: outright.
+    #:
+    #: A client this far behind is not one packet short, it has lost a run of
+    #: hundreds -- and repairing that costs bandwidth the next frame needs.
+    #: At full link utilisation there is none spare, so the repair starves
+    #: the following frame, which then needs repairing too. That is a
+    #: collapse, not a hiccup: once it starts the stream never recovers.
+    #:
+    #: Refusing lets the client drop the frame and start clean on the next
+    #: one. Aravis asks for up to 25% of a frame before giving up on its own
+    #: (ARV_GV_STREAM_PACKET_REQUEST_RATIO_DEFAULT), so this threshold is
+    #: what decides the outcome first.
+    MAX_RESEND_FRACTION = 0.10
+
+    #: Floor, so a small frame is not refused for asking about two packets.
+    MIN_RESEND_PACKETS = 64
 
     def resend(self, frame_id, first_id, last_id):
         """
@@ -296,11 +329,26 @@ class StreamChannel(object):
 
         if last_id < first_id:
             return False
+
+        # Serve all of it or none of it. Truncating was worse than refusing:
+        # the frame then cannot complete whatever else arrives, so every
+        # packet sent for it is wasted -- and wasted at exactly the moment
+        # the link is most oversubscribed. The client waits out its retention
+        # timeout for packets that were never coming.
         count = last_id - first_id + 1
-        if count > self.MAX_RESEND_PACKETS:
-            log.warning("resend request for %d packets of frame %d truncated "
-                        "to %d", count, frame_id, self.MAX_RESEND_PACKETS)
-            last_id = first_id + self.MAX_RESEND_PACKETS - 1
+        limit = max(self.MIN_RESEND_PACKETS,
+                    int(gvsp.packet_count(len(data), packet_size)
+                        * self.MAX_RESEND_FRACTION))
+        if count > limit:
+            self.n_resend_refused += 1
+            log.warning("refusing a resend of %d packets for frame %d (over "
+                        "%d); the client is too far behind for repair to be "
+                        "cheaper than the next frame", count, frame_id, limit)
+            try:
+                sock.sendto(gvsp.unavailable_packet(frame_id, first_id), target)
+            except OSError:
+                pass
+            return False
 
         sent = 0
         for packet_id in range(first_id, last_id + 1):
@@ -321,6 +369,26 @@ class StreamChannel(object):
         # repaired instead of being released on a fixed deadline.
         self._last_resend = time.monotonic()
         return sent > 0
+
+    def _pace(self, send_seconds):
+        """
+        Stay quiet for long enough to leave the link its reserved share.
+
+        The frame's own send time is the measurement: with a blocking socket
+        it is how long the wire took, so the pause needs no configured link
+        speed and tracks one that changes. This is the window resends are
+        answered in -- the control thread runs throughout, and the stream is
+        not competing with it for the wire.
+        """
+        if send_seconds <= 0 or self.link_utilisation >= 1.0:
+            return
+        idle = send_seconds * (1.0 / self.link_utilisation - 1.0)
+        deadline = time.perf_counter() + idle
+        while self.running:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.002, remaining))
 
     def _release_retained(self):
         """
@@ -424,7 +492,9 @@ class StreamChannel(object):
             if not still_wanted:
                 continue
 
+            sent_at = time.perf_counter()
             self._send_frame(frame, target, packet_size, packet_delay, geometry)
+            self._pace(time.perf_counter() - sent_at)
             self._await_resends()
 
             # One frame per AcquisitionStart, and the send is over either

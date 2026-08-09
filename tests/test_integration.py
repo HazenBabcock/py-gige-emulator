@@ -405,6 +405,57 @@ def test_restarting_delivers_a_fresh_frame_not_the_retained_one(client, server):
     client.write_register(stop, 1)
 
 
+def test_a_resend_larger_than_the_frame_can_afford_is_refused_whole(client,
+                                                                    server):
+    """
+    A request for a large run means the client lost hundreds of packets, not
+    one. Repairing that costs bandwidth the next frame needs, and at full
+    link utilisation there is none spare -- so the repair starves the next
+    frame, which then needs repairing too, and the stream never recovers.
+
+    Serving part of it is the worst of both: the frame still cannot complete
+    without the rest, so every packet sent for it is wasted at exactly the
+    moment the link is most oversubscribed. That is what a truncating
+    version did, and it showed up as the client timing out on frames the
+    device had just spent its bandwidth on.
+    """
+    camera = server.camera
+    client.take_control()
+    packet_size = client.open_stream()
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStart"].address, 1)
+    block, _, _ = client.receive_frame(packet_size)
+
+    before_sent = server.stats["resent_packets"]
+    before_refused = server.stats["resend_refused"]
+    # Far more than the frame has, so certainly over the fraction.
+    client.request_resend(block, 1, 10000)
+
+    deadline = time.monotonic() + 2.0
+    while (server.stats["resend_refused"] == before_refused
+           and time.monotonic() < deadline):
+        time.sleep(0.01)
+    assert server.stats["resend_refused"] == before_refused + 1
+    # Refused, not partly served: nothing was spent on a frame that could
+    # not have completed.
+    assert server.stats["resent_packets"] == before_sent
+    client.write_register(
+        camera.feature_set.by_name["AcquisitionStop"].address, 1)
+
+
+def test_the_stream_leaves_the_link_some_room(server):
+    """
+    The remainder is what resends travel in. Sending flat out means a lost
+    run can only be repaired by taking bandwidth from the next frame.
+    """
+    assert 0 < server.stream.link_utilisation < 1.0
+    # A frame that took 100 ms of wire time is followed by a pause, not by
+    # the next frame immediately.
+    started = time.monotonic()
+    server.stream._pace(0.1)
+    assert time.monotonic() - started >= 0.01
+
+
 def test_a_resend_for_a_frame_already_released_says_so(client, server):
     """
     Silence would cost the client its whole retention timeout before it gave

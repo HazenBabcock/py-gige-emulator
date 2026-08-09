@@ -26,7 +26,7 @@ class GigECameraServer(object):
                  packet_size=c.DEFAULT_PACKET_SIZE,
                  heartbeat_timeout_ms=3000, validate=True,
                  compress_xml=True, packet_resend=True, resend_guard=None,
-                 retain_frames=None):
+                 retain_frames=None, link_utilisation=None):
 
         if interface is not None:
             ip, netmask, mac = netif.interface_info(interface)
@@ -96,7 +96,8 @@ class GigECameraServer(object):
         self.stream = StreamChannel(camera, self.memory, self.lock, ip,
                                     control=self.control, interface=interface,
                                     resend_guard=resend_guard,
-                                    retain_frames=retain_frames)
+                                    retain_frames=retain_frames,
+                                    link_utilisation=link_utilisation)
 
     def _on_test_packet(self, packet_size, do_not_fragment):
         # Bound late rather than passed as self.stream.send_test_packet,
@@ -168,6 +169,7 @@ class GigECameraServer(object):
             "resend_requests": self.stream.n_resend_requests,
             "resent_packets": self.stream.n_resent_packets,
             "resend_unavailable": self.stream.n_resend_unavailable,
+            "resend_refused": self.stream.n_resend_refused,
             "send_errors": self.stream.n_send_errors,
             "has_control": self.control.has_control(),
             "acquiring": self.camera.acquiring,

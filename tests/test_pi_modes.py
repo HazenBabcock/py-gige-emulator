@@ -7,6 +7,7 @@
 # runs, it is just capped at a lower frame rate than the mode you asked for.
 #
 
+import time
 import importlib
 import os
 import sys
@@ -103,3 +104,57 @@ def test_the_label_round_trips_through_the_parser():
     """
     for mode in MODES:
         assert pi_camera.parse_mode(pi_camera.mode_label(mode), MODES) is mode
+
+
+# --- read-back of a value the sensor has not applied yet -----------------
+#
+# Constructed without __init__, because that opens a camera. Only the
+# pending-value bookkeeping is under test and it touches nothing else.
+
+def _settings_stub():
+    obj = pi_camera.PiCamera.__new__(pi_camera.PiCamera)
+    obj._pending = {}
+    return obj
+
+
+def test_a_just_written_value_reads_back_as_written():
+    """
+    libcamera metadata lags a frame or more, and get_camera_settings()
+    reports from it. Without this, writing 200 ms and reading back returns
+    the *previous* exposure -- which in a GUI is a control that snaps back to
+    its old value and then changes its mind a second later.
+    """
+    cam = _settings_stub()
+    cam._note_requested("ExposureTime", 200000.0)
+    assert cam._reported("ExposureTime", 90000.0) == 200000.0
+
+
+def test_the_measurement_takes_over_once_the_sensor_agrees():
+    """
+    Exposure is quantised to the sensor's line time, so an exact match never
+    arrives -- 200000 us is granted as 199787. Requiring equality would pin
+    the reported value to the request forever and hide what the sensor did.
+    """
+    cam = _settings_stub()
+    cam._note_requested("ExposureTime", 200000.0)
+    assert cam._reported("ExposureTime", 199787.0) == 199787.0
+    # And the request is finished with, so later readings pass straight
+    # through rather than being held at the old value.
+    assert cam._reported("ExposureTime", 150000.0) == 150000.0
+
+
+def test_a_value_the_sensor_refuses_surfaces_in_the_end():
+    """
+    Reporting the request indefinitely would hide coercion. The deadline is
+    what lets a value the hardware would not grant become visible.
+    """
+    cam = _settings_stub()
+    cam._note_requested("ExposureTime", 200000.0)
+    assert cam._reported("ExposureTime", 5000.0) == 200000.0
+    cam._pending["ExposureTime"] = (200000.0, time.monotonic() - 1.0)
+    assert cam._reported("ExposureTime", 5000.0) == 5000.0
+
+
+def test_an_unrequested_feature_is_reported_as_measured():
+    cam = _settings_stub()
+    assert cam._reported("Gain", 6.0) == 6.0

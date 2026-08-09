@@ -432,6 +432,55 @@ class PiCamera(EmulatedCamera):
             self.feature_set.by_name["ExposureTime"].default)
         self._requested_rate = float(frame_rate)
 
+        # Features written but not yet visible in metadata, as
+        # {name: (requested_value, deadline)}.
+        #
+        # Without this, writing a value and reading it back returns the old
+        # one. get_camera_settings() reports what the sensor achieved, the
+        # emulator stores whatever it returns, and metadata lags by a frame
+        # or more -- so a client that writes 200 ms and reads back sees the
+        # previous exposure, then sees 200 ms once metadata catches up. In a
+        # GUI that is a control that snaps back to its old value and then
+        # changes its mind, and it is what made the frame rate appear to
+        # ping-pong in arv-viewer.
+        #
+        # Reporting the request until the sensor visibly agrees fixes the
+        # flicker without hiding coercion: the deadline lets metadata win in
+        # the end, so a value the hardware genuinely refused still surfaces.
+        self._pending = {}
+
+    #: How close metadata has to get before a written value is considered
+    #: applied. Exposure is quantised to the sensor's line time, so an exact
+    #: match never comes: 200000 us is granted as 199787.
+    PENDING_TOLERANCE = 0.05
+
+    #: After this, metadata wins whatever it says. Long enough to cover a
+    #: slow frame at full resolution, short enough that a coerced value is
+    #: not misreported for long.
+    PENDING_TIMEOUT = 2.0
+
+    def _note_requested(self, name, value):
+        self._pending[name] = (float(value),
+                               time.monotonic() + self.PENDING_TIMEOUT)
+
+    def _reported(self, name, actual):
+        """
+        What to tell the client for a feature read back from metadata.
+
+        The request while one is outstanding, the measurement once the
+        sensor has caught up with it or the deadline has passed.
+        """
+        pending = self._pending.get(name)
+        if pending is None:
+            return actual
+        requested, deadline = pending
+        converged = abs(actual - requested) <= max(
+            1.0, abs(requested) * self.PENDING_TOLERANCE)
+        if converged or time.monotonic() > deadline:
+            del self._pending[name]
+            return actual
+        return requested
+
     def _configure_raw(self, width, height):
         config = self.picam2.create_video_configuration(
             raw={"format": self.raw_format, "size": (width, height)})
@@ -628,6 +677,7 @@ class PiCamera(EmulatedCamera):
             exposure_us = int(changed["ExposureTime"])
             controls["ExposureTime"] = exposure_us
             self._requested_exposure_us = float(exposure_us)
+            self._note_requested("ExposureTime", exposure_us)
             # A frame cannot be shorter than its exposure, so a long exposure
             # has to drag the frame rate down with it or libcamera silently
             # clamps the exposure instead.
@@ -641,9 +691,11 @@ class PiCamera(EmulatedCamera):
                 # change compares against it rather than against a request
                 # that has been overtaken.
                 self._requested_rate = rate
+            self._note_requested("AcquisitionFrameRate", rate)
 
         if "Gain" in changed:
             controls["AnalogueGain"] = db_to_gain(changed["Gain"])
+            self._note_requested("Gain", changed["Gain"])
 
         # Same trap as binning: self.settings is updated before this hook
         # runs, so the requested value has to be compared against what the
@@ -665,10 +717,12 @@ class PiCamera(EmulatedCamera):
             # well inside it leaves the exposure alone, because someone who
             # asks for 5 fps has not asked for a longer exposure.
             self._requested_rate = rate
+            self._note_requested("AcquisitionFrameRate", rate)
             if rate > 0 and self._requested_exposure_us > 1e6 / rate:
                 exposure_us = int(1e6 / rate)
                 controls["ExposureTime"] = exposure_us
                 self._requested_exposure_us = float(exposure_us)
+            self._note_requested("ExposureTime", exposure_us)
 
         if controls:
             log.info("applying %s", controls)
@@ -691,14 +745,17 @@ class PiCamera(EmulatedCamera):
         # requested value, so every client -- GUI or not, cached or not --
         # was told 10 Hz while the sensor ran at 2.
         if metadata.get("FrameDuration"):
-            out["AcquisitionFrameRate"] = 1e6 / metadata["FrameDuration"]
+            out["AcquisitionFrameRate"] = self._reported(
+                "AcquisitionFrameRate", 1e6 / metadata["FrameDuration"])
         if "ExposureTime" in metadata:
-            out["ExposureTime"] = float(metadata["ExposureTime"])
+            out["ExposureTime"] = self._reported(
+                "ExposureTime", float(metadata["ExposureTime"]))
         if "AnalogueGain" in metadata:
             # Reported as a float now rather than rounded to a whole
             # multiplier, which used to throw away most of the sensor's
             # resolution between 1x and 2x.
-            out["Gain"] = gain_to_db(float(metadata["AnalogueGain"]))
+            out["Gain"] = self._reported(
+                "Gain", gain_to_db(float(metadata["AnalogueGain"])))
         return out
 
 
