@@ -9,9 +9,20 @@
 import importlib
 import os
 import sys
+import time
 import types
 
 import pytest
+
+
+class _Frame(object):
+    """Stands in for the numpy array OpenCV hands back."""
+
+    def __init__(self, tag):
+        self.tag = tag
+
+    def tobytes(self):
+        return self.tag.encode()
 
 EXAMPLES = os.path.join(os.path.dirname(__file__), "..", "examples")
 
@@ -28,12 +39,51 @@ class _FakeCapture(object):
     CAP_PROP_FPS is refused and keeps reading back as the camera's nominal
     figure. Measured on an Integrated_Webcam_FHD, which reports 30 while
     delivering 15.9.
+
+    It also keeps capturing when nobody is reading, into a queue `depth`
+    deep, which is the other half of what is under test here. The timing is
+    what the real one does and what the code keys off: a queued frame is
+    already in memory and comes back instantly, a live one costs a wait on
+    the sensor.
     """
+
+    #: Frames the driver holds. Four is what V4L2 gives OpenCV by default.
+    depth = 4
+
+    #: What the sensor takes per frame. The camera's nominal 30 is a lie, so
+    #: this is deliberately not 1/30 -- the threshold has to work anyway.
+    interval = 1.0 / 15.9
 
     def __init__(self, device=0):
         self.device = device
         self.values = {}
         self.rejected = []
+        self.queued = 0
+        self.stale_grabs = 0
+        self.live_grabs = 0
+        self.last_grabbed = None
+
+    def leave_running(self):
+        """Let the camera capture with nobody reading it."""
+        self.queued = self.depth
+
+    def grab(self):
+        if self.queued > 0:
+            self.queued -= 1
+            self.stale_grabs += 1
+            self.last_grabbed = _Frame("stale")
+        else:
+            self.live_grabs += 1
+            self.last_grabbed = _Frame("live")
+            time.sleep(self.interval)
+        return True
+
+    def retrieve(self):
+        return True, self.last_grabbed
+
+    def read(self):
+        self.grab()
+        return self.retrieve()
 
     def isOpened(self):
         return True
@@ -59,6 +109,9 @@ def _load():
     for index, name in enumerate(_PROPS):
         setattr(module, name, index)
     module.VideoCapture = _FakeCapture
+    # Colour conversion is not what is under test, and the stand-in frame
+    # carries its tag through either branch.
+    module.cvtColor = lambda frame, code: frame
     sys.modules.setdefault("cv2", module)
     sys.path.insert(0, os.path.abspath(EXAMPLES))
     return importlib.import_module("opencv_camera"), module
@@ -70,6 +123,9 @@ opencv_camera, cv2 = _load()
 @pytest.fixture
 def camera():
     cam = opencv_camera.OpenCvCamera()
+    # next_frame() reads the geometry the device latches at AcquisitionStart,
+    # so a test calling it directly has to latch it too.
+    cam.latch_geometry()
     yield cam
     cam.close()
 
@@ -159,3 +215,63 @@ def test_one_slow_frame_is_not_a_stop(camera):
     # as a discontinuity: six intervals now span 15 s instead of 12.
     camera._note_arrival(at + 3.0)
     assert camera.measured_frame_rate() == pytest.approx(0.4)
+
+
+# --- frames the driver queued while nobody was reading -------------------
+#
+# A camera keeps capturing between acquisitions and the driver keeps four of
+# those frames. read() hands back the oldest, so without draining, the first
+# frame of every acquisition is one taken when the last acquisition ended --
+# and a snap is a whole acquisition, so that is the image the user sees.
+
+
+def test_the_first_frame_of_a_run_is_not_one_from_the_queue(camera):
+    camera.cap.leave_running()
+    assert camera.next_frame() == b"live"
+    assert camera.cap.stale_grabs == camera.cap.depth
+
+
+def test_the_wait_that_found_the_live_frame_is_not_thrown_away(camera):
+    # retrieve() decodes the frame the last grab took, so exactly one live
+    # grab is spent. Grabbing again would cost another whole frame interval.
+    camera.cap.leave_running()
+    camera.next_frame()
+    assert camera.cap.live_grabs == 1
+
+
+def test_a_run_in_progress_is_not_drained_every_frame(camera):
+    """
+    Draining costs a frame interval to find the live one, so doing it per
+    frame would halve the rate -- and there is nothing to drain anyway,
+    since the stream thread is already reading as fast as frames arrive.
+    """
+    camera.cap.leave_running()
+    camera.next_frame()
+    before = camera.cap.stale_grabs
+    for _ in range(4):
+        camera.next_frame()
+    assert camera.cap.stale_grabs == before
+
+
+def test_coming_back_after_a_break_drains_again(camera):
+    camera.cap.leave_running()
+    for _ in range(4):
+        camera.next_frame()
+    drained_once = camera.cap.stale_grabs
+
+    # The client went away; the camera kept capturing.
+    camera._arrivals[-1] -= 60.0
+    camera.cap.leave_running()
+    assert camera.next_frame() == b"live"
+    assert camera.cap.stale_grabs == drained_once + camera.cap.depth
+
+
+def test_draining_is_bounded(camera):
+    """
+    A source whose grabs are all instant -- a video file rather than a
+    camera -- must not be read to its end looking for one that waits.
+    """
+    camera.cap.depth = 10 ** 6
+    camera.cap.leave_running()
+    assert camera.next_frame() is not None
+    assert camera.cap.stale_grabs == opencv_camera.OpenCvCamera.MAX_DISCARD

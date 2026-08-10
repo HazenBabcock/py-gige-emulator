@@ -150,9 +150,15 @@ class OpenCvCamera(EmulatedCamera):
     def next_frame(self):
         """
         cap.read() blocks until the sensor has a frame, so this is also what
-        paces the stream.
+        paces the stream -- except on the first frame of a run, where the
+        queue has to be skipped first.
         """
-        ok, frame = self.cap.read()
+        now = time.monotonic()
+        gap = self._gap_before(now)
+        if gap is None or gap > self.RATE_GAP:
+            ok, frame = self._read_current()
+        else:
+            ok, frame = self.cap.read()
         if not ok:
             self.n_grab_failures += 1
             return None      # the stream thread simply tries again
@@ -201,6 +207,22 @@ class OpenCvCamera(EmulatedCamera):
     #: webcam and to a camera running at one frame every two seconds.
     RATE_GAP = 5.0
 
+    def _gap_before(self, now):
+        """
+        How long since the last frame, counted in frames at the rate we were
+        seeing, or None when there is no run to compare against.
+
+        One measure serving both the rate window and the queue skip below,
+        because they are asking the same question -- is this the next frame
+        of a run, or the first after a break -- and two thresholds that
+        disagreed would be a camera that forgets its rate without draining,
+        or drains without forgetting.
+        """
+        rate = self.measured_frame_rate()
+        if rate is None:
+            return None
+        return (now - self._arrivals[-1]) * rate
+
     def _note_arrival(self, now):
         """
         Record when a frame arrived, forgetting the history across a stop.
@@ -210,10 +232,51 @@ class OpenCvCamera(EmulatedCamera):
         the camera runs at 0.02 fps until the window refills. Snapping does
         exactly that -- every snap is its own start and stop.
         """
-        rate = self.measured_frame_rate()
-        if rate is not None and (now - self._arrivals[-1]) > self.RATE_GAP / rate:
+        gap = self._gap_before(now)
+        if gap is not None and gap > self.RATE_GAP:
             self._arrivals.clear()
         self._arrivals.append(now)
+
+    #: Most frames to discard when picking up a camera that has been left
+    #: running. Four deep on a UVC webcam, so this is a backstop against a
+    #: source whose grabs are always instant -- a video file, say -- which
+    #: would otherwise be drained frame by frame to its end.
+    MAX_DISCARD = 32
+
+    def _expected_interval(self):
+        rate = self.measured_frame_rate() or self.cap.get(cv2.CAP_PROP_FPS)
+        return 1.0 / rate if rate else 1.0 / 30.0
+
+    def _read_current(self):
+        """
+        read(), less whatever the driver queued while nobody was reading.
+
+        A camera keeps capturing between acquisitions, and those frames go
+        into the driver's queue -- four deep here. read() hands back the
+        oldest, so the first frames of every acquisition are the ones taken
+        just after the last one ended. Measured after idling five seconds:
+        four frames returned in about a millisecond each, their timestamps
+        advancing 60 ms apiece while five seconds of wall clock had passed,
+        and only the fifth was live.
+
+        A snap is a whole acquisition, so this is not a cosmetic first-frame
+        blemish: it shows the scene as it was when the previous snap ended.
+
+        Telling stale from live needs no frame count, and does not have to
+        trust one. A queued frame is already in memory and comes back
+        instantly; a live one costs a wait on the sensor. So grab until one
+        of them makes us wait, and keep that.
+        """
+        threshold = self._expected_interval() / 2.0
+        for _ in range(self.MAX_DISCARD):
+            started = time.monotonic()
+            if not self.cap.grab():
+                return False, None
+            if (time.monotonic() - started) >= threshold:
+                break
+        # retrieve() decodes the frame the last grab took, which is the one
+        # that waited -- so the wait is not spent and then thrown away.
+        return self.cap.retrieve()
 
     def measured_frame_rate(self):
         """
