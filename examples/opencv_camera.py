@@ -30,9 +30,17 @@ log = logging.getLogger("opencv_camera")
 # is exposed as a constructor argument.
 DEFAULT_EXPOSURE_SCALE = 100.0
 
-# cv2.CAP_PROP_AUTO_EXPOSURE on the V4L2 backend: 3 is auto, 1 is manual.
+# cv2.CAP_PROP_AUTO_EXPOSURE on the V4L2 backend: 3 is aperture priority,
+# which is this driver's name for automatic exposure time. 1 is manual.
+#
+# Only the automatic setting is ever written, and it is written at startup
+# whatever the camera was already doing. Manual exposure on a webcam is a
+# trap: the setting lives in the driver, not in this process, so it outlives
+# the run and applies to every other application on the machine. One process
+# that set an exposure and exited left this camera returning black frames
+# once the room got dark, and no amount of restarting the emulator fixed it
+# because nothing here was wrong.
 AUTO_EXPOSURE_ON = 3.0
-AUTO_EXPOSURE_OFF = 1.0
 
 # OpenCV has no API for listing a camera's supported modes, so the only
 # portable way to find them is to ask for each in turn and see what comes
@@ -74,9 +82,20 @@ def probe_modes(device, candidates=CANDIDATE_MODES):
 
 class OpenCvCamera(EmulatedCamera):
 
+    # Reported, not set. A webcam runs its own exposure loop and this example
+    # leaves it to it, which is what anyone pointing a client at a webcam
+    # expects: it behaves like every other program that opens one.
+    #
+    # The bounds are wide because they are decorative on a read only feature
+    # and load-bearing in one other way: a reported value outside them makes
+    # validate() raise, and the device then logs a traceback on every single
+    # register read. What a given camera reports depends on its driver's
+    # units and on --exposure-scale, neither of which is known here, so the
+    # range is drawn to accommodate rather than to constrain.
     extra_features = (
-        FloatFeature("ExposureTime", "Exposure time", "AcquisitionControl",
-                     "RW", default=10000.0, min=1.0, max=1e6, unit="us"),
+        FloatFeature("ExposureTime", "Exposure time the camera chose",
+                     "AcquisitionControl", "RO",
+                     default=10000.0, min=0.0, max=1e7, unit="us"),
         # GainRaw, not Gain, and deliberately. The convention's Gain is a
         # float in dB, which needs the underlying value to be a linear
         # multiplier -- and cv2.CAP_PROP_GAIN is whatever V4L2 control the
@@ -85,9 +104,14 @@ class OpenCvCamera(EmulatedCamera):
         # has no dB value at all. GainRaw is the GenICam 1.x name that exists
         # for exactly this case: device-specific integer gain. The Pi example
         # does have a real multiplier and uses Gain in dB.
-        IntFeature("GainRaw", "Analog gain, in the driver's own units",
-                   "AnalogControl", "RW",
-                   default=1, min=0, max=255),
+        #
+        # Read only for the same reason as the exposure: it is the other half
+        # of the automatic loop. This driver holds it at its maximum of 8 to
+        # serve the exposure it has chosen, so a client writing it would be
+        # arguing with the algorithm rather than driving the camera.
+        IntFeature("GainRaw", "Analog gain the camera chose, in the driver's "
+                              "own units", "AnalogControl", "RO",
+                   default=1, min=0, max=65535),
     )
 
     def __init__(self, device=0, width=640, height=480, pixel_format="Mono8",
@@ -99,6 +123,12 @@ class OpenCvCamera(EmulatedCamera):
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+        # Unconditionally, rather than only when it looks wrong: whatever
+        # left the camera in manual is not necessarily this program, and the
+        # symptom of inheriting it -- black frames from a camera that reports
+        # no error at all -- points nowhere near the exposure.
+        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXPOSURE_ON)
 
         # Use what the camera actually gave us, not what we asked for. A
         # webcam is free to ignore the request and hand back its nearest
@@ -177,24 +207,18 @@ class OpenCvCamera(EmulatedCamera):
         return frame.tobytes()
 
     def set_camera_settings(self, changed):
-        if "ExposureTime" in changed:
-            # Auto exposure overrides anything we write, so it has to go
-            # first -- and it has to go first every time, because some
-            # drivers re-enable it when the stream restarts.
-            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXPOSURE_OFF)
-            raw = changed["ExposureTime"] / self.exposure_scale
-            if not self.cap.set(cv2.CAP_PROP_EXPOSURE, raw):
-                log.warning("camera refused exposure %g us (raw %g)",
-                            changed["ExposureTime"], raw)
+        """
+        Nothing to do, and deliberately nothing to do.
 
-        if "GainRaw" in changed:
-            if not self.cap.set(cv2.CAP_PROP_GAIN, float(changed["GainRaw"])):
-                log.warning("camera refused gain %d", changed["GainRaw"])
+        Exposure, gain and frame rate are the three things a client would
+        want to write here, and on a webcam all three are the camera's to
+        decide: the first two are the automatic exposure loop, and the third
+        is a consequence of the format and size rather than a control at all.
+        All are served read only, so this hook is never called for them.
 
-        # AcquisitionFrameRate is deliberately absent: it is read only, so
-        # this hook is never called for it. The rate belongs to the camera --
-        # cap.read() blocking at whatever rate it settles on is what paces
-        # the stream.
+        Geometry and pixel format do not come through here either -- the
+        emulator reconfigures the capture for those.
+        """
 
     #: Frames the measured rate averages over. Long enough not to jump about
     #: on one slow read, short enough to follow a rate that has genuinely
@@ -298,6 +322,18 @@ class OpenCvCamera(EmulatedCamera):
         return (len(self._arrivals) - 1) / span
 
     def get_camera_settings(self):
+        # Whatever the driver says, which is not always what the camera is
+        # doing. V4L2 marks exposure_time_absolute *inactive* while automatic
+        # exposure is on -- writing it then fails with EPERM -- and this
+        # driver leaves the control at whatever value was last set manually
+        # rather than updating it to the exposure it chose. Measured: set to
+        # 20 by hand it reported 2000 us, set to 400 it reported 40000 us,
+        # and the image was equally bright both times.
+        #
+        # So on a driver like this the number is a leftover, not a
+        # measurement. It is still what the device knows, and OpenCV offers
+        # no way to ask whether a control is active, so it is passed through
+        # rather than suppressed or invented.
         out = {
             "ExposureTime": self.cap.get(cv2.CAP_PROP_EXPOSURE) * self.exposure_scale,
             "GainRaw": int(self.cap.get(cv2.CAP_PROP_GAIN)),

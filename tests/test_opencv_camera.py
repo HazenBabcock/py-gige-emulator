@@ -143,12 +143,44 @@ def test_the_frame_rate_is_not_offered_as_writable(camera):
     assert camera.feature_set.by_name["AcquisitionFrameRate"].access == "RO"
 
 
-def test_nothing_writes_the_rate_at_the_camera(camera):
-    # Not merely refused upstream: the hook must not push it either, or a
-    # camera that did accept the value would end up disagreeing with the
-    # feature the client is told is read only.
-    camera.set_camera_settings({"AcquisitionFrameRate": 5.0})
+def test_exposure_and_gain_are_the_cameras_to_decide(camera):
+    """
+    A webcam runs its own exposure loop, and gain is the other half of it --
+    this driver pins gain at its maximum to serve the exposure it picked. A
+    client writing either would be arguing with the algorithm.
+    """
+    for name in ("ExposureTime", "GainRaw"):
+        assert camera.feature_set.by_name[name].access == "RO"
+
+
+def test_the_camera_is_put_into_automatic_exposure(camera):
+    """
+    Written at startup whatever the camera was already doing, because manual
+    exposure lives in the driver rather than in this process: it outlives the
+    run, applies to every other program on the machine, and presents as black
+    frames from a camera that reports no error at all.
+    """
+    assert camera.cap.values[cv2.CAP_PROP_AUTO_EXPOSURE] == \
+        opencv_camera.AUTO_EXPOSURE_ON
+
+
+def test_nothing_is_written_at_the_camera(camera):
+    # Not merely refused upstream: the hook must not push these either, or a
+    # camera that did accept one would end up disagreeing with the feature
+    # the client is told is read only.
+    before = dict(camera.cap.values)
+    camera.set_camera_settings({"AcquisitionFrameRate": 5.0,
+                                "ExposureTime": 5000.0, "GainRaw": 4})
+    assert camera.cap.values == before
     assert camera.cap.rejected == []
+
+
+def test_what_the_camera_chose_is_what_gets_reported(camera):
+    camera.cap.values[cv2.CAP_PROP_EXPOSURE] = 50.0        # driver units
+    camera.cap.values[cv2.CAP_PROP_GAIN] = 8
+    reported = camera.get_camera_settings()
+    assert reported["ExposureTime"] == 5000.0              # 100 us apiece
+    assert reported["GainRaw"] == 8
 
 
 # --- what it reports ------------------------------------------------------
