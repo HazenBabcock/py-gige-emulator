@@ -20,15 +20,10 @@ import cv2
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from gige_emulator import (EmulatedCamera, FloatFeature, GigECameraServer,
-                           IntFeature, netif)
+from gige_emulator import (EmulatedCamera, GigECameraServer, IntFeature,
+                           netif)
 
 log = logging.getLogger("opencv_camera")
-
-# V4L2 reports exposure in units of 100 us. This is a convention rather than
-# a guarantee -- other backends and other cameras scale differently -- so it
-# is exposed as a constructor argument.
-DEFAULT_EXPOSURE_SCALE = 100.0
 
 # cv2.CAP_PROP_AUTO_EXPOSURE on the V4L2 backend: 3 is aperture priority,
 # which is this driver's name for automatic exposure time. 1 is manual.
@@ -82,20 +77,23 @@ def probe_modes(device, candidates=CANDIDATE_MODES):
 
 class OpenCvCamera(EmulatedCamera):
 
-    # Reported, not set. A webcam runs its own exposure loop and this example
-    # leaves it to it, which is what anyone pointing a client at a webcam
-    # expects: it behaves like every other program that opens one.
+    # There is deliberately no ExposureTime here, neither writable nor
+    # readable.
     #
-    # The bounds are wide because they are decorative on a read only feature
-    # and load-bearing in one other way: a reported value outside them makes
-    # validate() raise, and the device then logs a traceback on every single
-    # register read. What a given camera reports depends on its driver's
-    # units and on --exposure-scale, neither of which is known here, so the
-    # range is drawn to accommodate rather than to constrain.
+    # Writable is wrong because the camera runs its own exposure loop and
+    # this example leaves it to it. Readable looked reasonable and is not:
+    # V4L2 marks exposure_time_absolute inactive while automatic exposure is
+    # on -- writing it then fails with EPERM -- and a driver is free to leave
+    # it at whatever was last set by hand rather than updating it to the
+    # exposure it chose. This webcam does exactly that. Set to 20 by hand it
+    # reported 2000 us, set to 400 it reported 40000 us, and the picture was
+    # equally bright both times: a twentyfold difference describing nothing.
+    #
+    # OpenCV offers no way to ask whether a control is active, so there is no
+    # way to tell the honest case from that one. A feature that is sometimes
+    # a measurement and sometimes a leftover is worse than no feature: a
+    # client cannot tell which it has, and neither can we.
     extra_features = (
-        FloatFeature("ExposureTime", "Exposure time the camera chose",
-                     "AcquisitionControl", "RO",
-                     default=10000.0, min=0.0, max=1e7, unit="us"),
         # GainRaw, not Gain, and deliberately. The convention's Gain is a
         # float in dB, which needs the underlying value to be a linear
         # multiplier -- and cv2.CAP_PROP_GAIN is whatever V4L2 control the
@@ -105,17 +103,19 @@ class OpenCvCamera(EmulatedCamera):
         # for exactly this case: device-specific integer gain. The Pi example
         # does have a real multiplier and uses Gain in dB.
         #
-        # Read only for the same reason as the exposure: it is the other half
-        # of the automatic loop. This driver holds it at its maximum of 8 to
-        # serve the exposure it has chosen, so a client writing it would be
-        # arguing with the algorithm rather than driving the camera.
+        # Read only because it is the other half of the automatic exposure
+        # loop. This driver holds it at its maximum of 8 to serve the
+        # exposure the algorithm picked, so a client writing it would be
+        # arguing with the loop rather than driving the camera. Unlike the
+        # exposure it does read back as what the camera is using, so it is
+        # worth reporting.
         IntFeature("GainRaw", "Analog gain the camera chose, in the driver's "
                               "own units", "AnalogControl", "RO",
                    default=1, min=0, max=65535),
     )
 
     def __init__(self, device=0, width=640, height=480, pixel_format="Mono8",
-                 exposure_scale=DEFAULT_EXPOSURE_SCALE, **kwds):
+                 **kwds):
 
         self.cap = cv2.VideoCapture(device)
         if not self.cap.isOpened():
@@ -144,7 +144,6 @@ class OpenCvCamera(EmulatedCamera):
         frame_rate = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
 
         self.pixel_format = pixel_format
-        self.exposure_scale = exposure_scale
         self.n_grab_failures = 0
 
         # When each of the last few frames arrived, for the measured rate
@@ -322,22 +321,7 @@ class OpenCvCamera(EmulatedCamera):
         return (len(self._arrivals) - 1) / span
 
     def get_camera_settings(self):
-        # Whatever the driver says, which is not always what the camera is
-        # doing. V4L2 marks exposure_time_absolute *inactive* while automatic
-        # exposure is on -- writing it then fails with EPERM -- and this
-        # driver leaves the control at whatever value was last set manually
-        # rather than updating it to the exposure it chose. Measured: set to
-        # 20 by hand it reported 2000 us, set to 400 it reported 40000 us,
-        # and the image was equally bright both times.
-        #
-        # So on a driver like this the number is a leftover, not a
-        # measurement. It is still what the device knows, and OpenCV offers
-        # no way to ask whether a control is active, so it is passed through
-        # rather than suppressed or invented.
-        out = {
-            "ExposureTime": self.cap.get(cv2.CAP_PROP_EXPOSURE) * self.exposure_scale,
-            "GainRaw": int(self.cap.get(cv2.CAP_PROP_GAIN)),
-        }
+        out = {"GainRaw": int(self.cap.get(cv2.CAP_PROP_GAIN))}
         # Left at whatever was last measured when the stream is stopped,
         # rather than reset. A stopped camera has no rate, and the last one
         # it ran at is the more useful answer than either zero or the
@@ -388,9 +372,6 @@ if __name__ == "__main__":
                              "goes quiet for a long time, not merely a slow "
                              "one")
     parser.add_argument("--packet-size", type=int, default=1400)
-    parser.add_argument("--exposure-scale", type=float,
-                        default=DEFAULT_EXPOSURE_SCALE,
-                        help="microseconds per unit of CAP_PROP_EXPOSURE")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -421,8 +402,7 @@ if __name__ == "__main__":
             parser.error("--mode wants WIDTHxHEIGHT, e.g. 1280x720")
 
     camera = OpenCvCamera(device=args.device, width=width, height=height,
-                          pixel_format=args.pixel_format,
-                          exposure_scale=args.exposure_scale)
+                          pixel_format=args.pixel_format)
 
     try:
         server = GigECameraServer(camera, interface=args.interface,

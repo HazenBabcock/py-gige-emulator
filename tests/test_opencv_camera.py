@@ -29,7 +29,7 @@ EXAMPLES = os.path.join(os.path.dirname(__file__), "..", "examples")
 # The property ids are arbitrary here -- nothing under test depends on their
 # real values, only on the stub and the example agreeing.
 _PROPS = ["CAP_PROP_FPS", "CAP_PROP_FRAME_WIDTH", "CAP_PROP_FRAME_HEIGHT",
-          "CAP_PROP_EXPOSURE", "CAP_PROP_GAIN", "CAP_PROP_AUTO_EXPOSURE",
+          "CAP_PROP_GAIN", "CAP_PROP_AUTO_EXPOSURE",
           "COLOR_BGR2GRAY", "COLOR_BGR2RGB"]
 
 
@@ -143,14 +143,27 @@ def test_the_frame_rate_is_not_offered_as_writable(camera):
     assert camera.feature_set.by_name["AcquisitionFrameRate"].access == "RO"
 
 
-def test_exposure_and_gain_are_the_cameras_to_decide(camera):
+def test_gain_is_the_cameras_to_decide(camera):
     """
-    A webcam runs its own exposure loop, and gain is the other half of it --
-    this driver pins gain at its maximum to serve the exposure it picked. A
-    client writing either would be arguing with the algorithm.
+    Gain is the other half of the automatic exposure loop -- this driver pins
+    it at its maximum to serve the exposure it picked -- so a client writing
+    it would be arguing with the algorithm.
     """
-    for name in ("ExposureTime", "GainRaw"):
-        assert camera.feature_set.by_name[name].access == "RO"
+    assert camera.feature_set.by_name["GainRaw"].access == "RO"
+
+
+def test_there_is_no_exposure_feature_at_all(camera):
+    """
+    Not writable, and not readable either. V4L2 marks the exposure control
+    inactive while automatic exposure is on, and this driver then leaves it
+    at whatever was last set by hand: 20 reads back as 2000 us and 400 as
+    40000 us, with the picture equally bright both times. OpenCV cannot say
+    whether a control is active, so a value that is sometimes a measurement
+    and sometimes a leftover is worse than none -- neither the client nor
+    this code can tell which it is holding.
+    """
+    assert "ExposureTime" not in camera.feature_set.by_name
+    assert "ExposureTime" not in camera.get_camera_settings()
 
 
 def test_the_camera_is_put_into_automatic_exposure(camera):
@@ -169,18 +182,14 @@ def test_nothing_is_written_at_the_camera(camera):
     # camera that did accept one would end up disagreeing with the feature
     # the client is told is read only.
     before = dict(camera.cap.values)
-    camera.set_camera_settings({"AcquisitionFrameRate": 5.0,
-                                "ExposureTime": 5000.0, "GainRaw": 4})
+    camera.set_camera_settings({"AcquisitionFrameRate": 5.0, "GainRaw": 4})
     assert camera.cap.values == before
     assert camera.cap.rejected == []
 
 
 def test_what_the_camera_chose_is_what_gets_reported(camera):
-    camera.cap.values[cv2.CAP_PROP_EXPOSURE] = 50.0        # driver units
     camera.cap.values[cv2.CAP_PROP_GAIN] = 8
-    reported = camera.get_camera_settings()
-    assert reported["ExposureTime"] == 5000.0              # 100 us apiece
-    assert reported["GainRaw"] == 8
+    assert camera.get_camera_settings()["GainRaw"] == 8
 
 
 # --- what it reports ------------------------------------------------------
