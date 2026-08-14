@@ -309,13 +309,31 @@ control, and again with a matching MAC but the emulator's own vendor name:
 |---|---|---|
 | Aravis | yes | nothing |
 | ImpactAcquire (Balluff) | yes | nothing |
-| VimbaX (Allied Vision) | no | an Allied Vision OUI — `00:0a:47` or `00:0f:31` |
+| VimbaX (Allied Vision) | no | one of exactly two OUIs, `00:0a:47` or `00:0f:31` |
 | pylon (Basler) | no | a Basler OUI, `00:30:53`, **and** the vendor name `Basler` |
 
 Model and serial are free in both cases. Vendor names that are known to
 change client behaviour are logged as a warning rather than refused, because
 this is what they are for — but Aravis switches its own per-vendor workarounds
 on the same string, so borrowing one is not free.
+
+VimbaX's two are the whole list rather than the two that happened to be
+tried. `VimbaGigETL.cti` assembles the top three octets and compares them
+against `0x000a47` and `0x000f31`, in that shape, at four call sites:
+
+```
+    cmp   eax, 0xa47
+    sete  r13b
+    cmp   eax, 0xf31
+    sete  al
+    or    r13d, eax
+```
+
+Two immediates OR'd together — no table to extend and nothing to widen it
+with. So borrow one of those rather than matching some particular camera:
+Allied Vision's newer blocks are not in this build, and neither is anyone
+else's. The vendors also check separately, not against some shared list of
+camera makers — with Basler's `00:30:53`, VimbaX reports zero devices.
 
 Two things worth being clear about. An OUI is assigned by the IEEE to a real
 company, so a borrowed one belongs in a deliberate flag on a private network
