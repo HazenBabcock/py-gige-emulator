@@ -318,22 +318,15 @@ this is what they are for — but Aravis switches its own per-vendor workarounds
 on the same string, so borrowing one is not free.
 
 VimbaX's two are the whole list rather than the two that happened to be
-tried. `VimbaGigETL.cti` assembles the top three octets and compares them
-against `0x000a47` and `0x000f31`, in that shape, at four call sites:
-
-```
-    cmp   eax, 0xa47
-    sete  r13b
-    cmp   eax, 0xf31
-    sete  al
-    or    r13d, eax
-```
-
-Two immediates OR'd together — no table to extend and nothing to widen it
-with. So borrow one of those rather than matching some particular camera:
-Allied Vision's newer blocks are not in this build, and neither is anyone
+tried: its GigE transport layer tests the top three octets against two fixed
+values, with no table behind them and no setting that widens the check. So
+borrow one of those rather than matching some particular camera — Allied
+Vision's newer blocks are not accepted by this build, and neither is anyone
 else's. The vendors also check separately, not against some shared list of
-camera makers — with Basler's `00:30:53`, VimbaX reports zero devices.
+camera makers: with Basler's `00:30:53`, VimbaX reports zero devices.
+
+Both OUIs above come from the IEEE MA-L registry, which is public — on
+Debian, `/usr/share/ieee-data/oui.txt`.
 
 Two things worth being clear about. An OUI is assigned by the IEEE to a real
 company, so a borrowed one belongs in a deliberate flag on a private network
