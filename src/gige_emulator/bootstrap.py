@@ -7,11 +7,14 @@
 # fails to find the camera.
 #
 
+import logging
 import socket
 import struct
 from dataclasses import dataclass, field
 
 from . import constants as c
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,10 +38,17 @@ class DeviceInfo:
     packet_resend: bool = True
 
     def __post_init__(self):
+        # Refused outright once, which turned out to be too strong: a client
+        # that only admits its own vendor needs exactly this name, so the
+        # choice belongs to the caller. Said out loud rather than silently,
+        # because the effects land far from here -- Aravis switches on the
+        # vendor string, so a borrowed name changes how a *working* client
+        # behaves as well as how a refusing one does.
         if self.manufacturer_name in c.RESERVED_VENDOR_NAMES:
-            raise ValueError(
-                "vendor name %r triggers client side per-vendor workarounds; "
-                "pick another" % self.manufacturer_name)
+            log.warning("vendor name %r belongs to a real manufacturer whose "
+                        "name clients apply per-vendor workarounds to; a "
+                        "client that checks it will usually want a matching "
+                        "MAC OUI too", self.manufacturer_name)
 
 
 def _ip_to_u32(text):

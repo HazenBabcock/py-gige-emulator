@@ -163,9 +163,29 @@ def test_device_mode_declares_the_endianness_it_actually_serves():
     assert struct.unpack_from(">I", page, c.BS_DEVICE_MODE)[0] == mode
 
 
-def test_a_reserved_vendor_name_is_refused():
-    with pytest.raises(ValueError):
-        bootstrap.DeviceInfo(ip="10.0.0.1", manufacturer_name="Basler")
+def test_a_reserved_vendor_name_is_served_but_warned_about(caplog):
+    """
+    Refusing these outright was too strong. pylon's GigE transport layer will
+    not enumerate a device at all unless it calls itself Basler, so the name
+    has a real use -- but it also changes the behaviour of clients that were
+    working, which is what the warning is for.
+    """
+    with caplog.at_level(logging.WARNING, logger="gige_emulator.bootstrap"):
+        info = bootstrap.DeviceInfo(ip="10.0.0.1", manufacturer_name="Basler")
+    assert info.manufacturer_name == "Basler"
+    assert "Basler" in caplog.text
+
+    memory = DeviceMemory()
+    memory.set_genicam_xml(b"<x/>")
+    bootstrap.init_bootstrap(memory, info, 4)
+    page = bootstrap.discovery_page(memory)
+    assert page[0x48:0x4E] == b"Basler"
+
+
+def test_an_ordinary_vendor_name_says_nothing(caplog):
+    with caplog.at_level(logging.WARNING, logger="gige_emulator.bootstrap"):
+        bootstrap.DeviceInfo(ip="10.0.0.1", manufacturer_name="py-gige-emulator")
+    assert caplog.text == ""
 
 
 # --- features ------------------------------------------------------------

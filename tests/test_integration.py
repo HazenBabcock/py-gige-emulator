@@ -12,7 +12,9 @@ import pytest
 from fakeclient import FakeClient, FakeClientError
 from gige_emulator import (EmulatedCamera, FloatFeature, GigECameraServer,
                            IntFeature, StringFeature)
+from gige_emulator import bootstrap
 from gige_emulator import constants as c
+from gige_emulator import netif
 from gige_emulator import stream as stream_module
 
 WIDTH, HEIGHT = 64, 48
@@ -103,6 +105,37 @@ def test_discovery_reports_the_device_identity(client):
     assert info["mac"] == bytes.fromhex("020000000001")
 
 
+def test_a_mac_from_the_caller_survives_being_given_an_interface():
+    """
+    Naming an interface reads three things off it, and the MAC used to be one
+    of them unconditionally -- so there was no way to set it except by not
+    naming an interface at all. It is worth setting: the first three octets
+    are the vendor's IEEE OUI, and pylon and VimbaX both refuse to enumerate
+    a device whose OUI is not one of their own.
+    """
+    borrowed = netif.parse_mac("00:30:53:12:34:56")
+    camera = PatternCamera(width=8, height=8, pixel_format="Mono8")
+    srv = GigECameraServer(camera, interface="lo", mac=borrowed,
+                           model_name="PatternCam", serial_number="TEST-1",
+                           gvcp_port=PORT + 4, bind_address="127.0.0.1")
+    assert srv.info.mac == borrowed
+    # And it is the ack that matters, since that is the only place a client
+    # looks before deciding whether the device is one it will talk to.
+    assert bootstrap.discovery_page(srv.memory)[0x0A:0x10] == borrowed
+
+    # The address still comes from the interface. It has to: a client that
+    # believed an invented one would have nowhere to send its commands.
+    assert srv.ip == netif.interface_info("lo")[0]
+
+
+def test_the_interfaces_own_mac_is_used_when_none_is_given():
+    camera = PatternCamera(width=8, height=8, pixel_format="Mono8")
+    srv = GigECameraServer(camera, interface="lo",
+                           model_name="PatternCam", serial_number="TEST-1",
+                           gvcp_port=PORT + 5, bind_address="127.0.0.1")
+    assert srv.info.mac == netif.interface_info("lo")[2]
+
+
 def test_the_user_defined_name_reaches_the_discovery_ack():
     """
     It is the one identity field a client can select on but does not list --
@@ -166,6 +199,55 @@ def test_the_xml_is_served_zipped_and_the_url_says_so(client, server):
 
 def test_the_served_blob_is_never_larger_than_the_xml(server):
     assert len(server.xml_blob) <= len(server.xml)
+
+
+# --- how much a client may ask for in one read ---------------------------
+#
+# The device used to refuse anything over 512 bytes, which is Aravis's chunk
+# size rather than a limit of its own. pylon asks for 1256 bytes in one go and
+# every open failed at the XML with "Failed to read memory at 0x10000, 0x4e8
+# bytes. An invalid parameter is reported by the device."
+
+
+def test_a_read_larger_than_a_client_chunk_is_answered(client, server):
+    data = client.read_memory(server.memory.xml_base, 1256, chunk=1256)
+    assert len(data) == 1256
+    assert data == server.xml_blob[:1256].ljust(1256, b"\x00")
+
+
+def test_the_xml_is_the_same_however_it_is_chunked(client, server):
+    url = client.read_memory(c.BS_XML_URL_0, c.BS_XML_URL_SIZE)
+    address, size = url.split(b"\x00", 1)[0].decode().rsplit(";", 2)[1:]
+    address, size = int(address, 16), int(size, 16)
+    in_chunks = client.read_memory(address, size)
+    in_one_go = client.read_memory(address, size, chunk=c.GVCP_READMEM_MAX)
+    assert in_one_go == in_chunks
+
+
+def test_a_read_too_large_for_one_ack_is_still_refused(client, server):
+    """
+    The ceiling is what fits in a datagram, so past it the device cannot
+    answer at all. Refusing is the honest response: a short ack would look
+    like a successful read of fewer bytes and corrupt whatever was being
+    downloaded.
+    """
+    with pytest.raises(FakeClientError) as caught:
+        client.read_memory(server.memory.xml_base, c.GVCP_READMEM_MAX + 4,
+                           chunk=c.GVCP_READMEM_MAX + 4)
+    assert caught.value.error == c.ERROR_INVALID_PARAMETER
+
+
+def test_the_largest_allowed_read_fits_in_one_datagram(client, server):
+    """
+    The whole point of the number, checked against the wire rather than
+    against the constant it was derived from.
+    """
+    data = client.read_memory(server.memory.xml_base, c.GVCP_READMEM_MAX,
+                              chunk=c.GVCP_READMEM_MAX)
+    assert len(data) == c.GVCP_READMEM_MAX
+    # 8 byte GVCP header, 4 byte echoed address, and what is left of a 1500
+    # byte frame after IP and UDP.
+    assert 8 + 4 + c.GVCP_READMEM_MAX <= 1500 - 20 - 8
 
 
 def test_xml_compression_can_be_turned_off(server):

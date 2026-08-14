@@ -46,9 +46,22 @@ ERROR_ACCESS_DENIED = 0x06
 ERROR_BUSY = 0x07
 ERROR_GENERIC = 0xFF
 
-# The client never asks for more than this in one READMEM, and chunks
-# anything larger itself.
+# How much of a large read a *client* asks for at a time. Aravis hardcodes
+# this at ARV_GVCP_DATA_SIZE_MAX and chunks anything larger itself, and the
+# fake client in the tests imitates it. It is not a limit on the device: see
+# GVCP_READMEM_MAX for that.
 GVCP_DATA_SIZE_MAX = 512
+
+# The largest READMEM this device will answer, which is set by the datagram
+# the ack has to fit in: 1500 byte MTU, less 20 for IP and 8 for UDP, leaves
+# 1472 for the GVCP message, and READMEM_ACK spends 8 of those on the header
+# and 4 more echoing the address. The result is already a multiple of four,
+# which memory operations have to be.
+#
+# Treating a client's chunk size as the device's limit made this 512, and
+# clients that read in bigger bites than Aravis then failed on the XML with
+# an invalid parameter error -- pylon asks for 1256 bytes in one go.
+GVCP_READMEM_MAX = 1460
 
 # Bits in the GVCP capability register at 0x0934.
 #

@@ -107,12 +107,17 @@ class FakeClient(object):
         self._command(c.CMD_WRITE_REGISTER, struct.pack(">II", address, value),
                       c.ACK_WRITE_REGISTER)
 
-    def read_memory(self, address, size):
+    def read_memory(self, address, size, chunk=None):
+        """
+        `chunk` is how much to ask for in one command. It defaults to what
+        Aravis uses; pass a larger one to read the way a client that does not
+        share that limit reads -- pylon asks for 1256 bytes at a time.
+        """
         out = bytearray()
         while len(out) < size:
             # Chunked the way the real client does, and rounded up to a
             # multiple of four, which is what makes XML padding necessary.
-            want = min(c.GVCP_DATA_SIZE_MAX, size - len(out))
+            want = min(chunk or c.GVCP_DATA_SIZE_MAX, size - len(out))
             rounded = (want + 3) // 4 * 4
             payload = self._command(
                 c.CMD_READ_MEMORY,

@@ -965,6 +965,12 @@ if __name__ == "__main__":
                         help="serial number. Part of the device id, and the "
                              "usual thing to vary between two of the same "
                              "camera; some clients pin it in their config")
+    parser.add_argument("--mac", default="",
+                        help="MAC address to report, e.g. 00:30:53:12:34:56. "
+                             "Defaults to the interface's own. Nothing is "
+                             "sent from it -- but its first three octets are "
+                             "the vendor's IEEE OUI, and a vendor's client "
+                             "may admit only devices carrying theirs")
     parser.add_argument("--list-modes", action="store_true",
                         help="print the sensor modes libcamera reports, "
                              "then exit")
@@ -1033,6 +1039,13 @@ if __name__ == "__main__":
     except netif.InterfaceError as e:
         parser.error(str(e))
 
+    mac = None
+    if args.mac:
+        try:
+            mac = netif.parse_mac(args.mac)
+        except ValueError as e:
+            parser.error(str(e))
+
     width, height = args.width, args.height
     raw_format = None
     if args.mode is not None:
@@ -1059,7 +1072,7 @@ if __name__ == "__main__":
     camera.start()
 
     try:
-        server = GigECameraServer(camera, interface=args.interface,
+        server = GigECameraServer(camera, interface=args.interface, mac=mac,
                                   vendor_name=args.vendor, model_name=args.model,
                                   serial_number=args.serial,
                                   user_defined_name=args.name,

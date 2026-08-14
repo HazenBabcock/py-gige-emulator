@@ -258,8 +258,11 @@ class ControlChannel(object):
 
         if cmd == c.CMD_READ_MEMORY:
             addr, count = gvcp.decode_read_memory(command.payload)
-            if count > c.GVCP_DATA_SIZE_MAX:
-                raise MemoryError_("read too large", c.ERROR_INVALID_PARAMETER)
+            if count > c.GVCP_READMEM_MAX:
+                raise MemoryError_("read of %d bytes is larger than this "
+                                   "device answers in one ack (%d)"
+                                   % (count, c.GVCP_READMEM_MAX),
+                                   c.ERROR_INVALID_PARAMETER)
             if self.bridge is not None:
                 self.bridge.before_read(addr, count)
             with self.lock:

@@ -290,6 +290,44 @@ To tell the two apart, capture at the device and look at which side the gaps
 are on. Time between a request arriving and the answer going out is the
 device; time between an answer and the next request is the link.
 
+#### Not showing up in a vendor's client ####
+
+Some transport layers only admit their own manufacturer's cameras, and they
+decide from the **MAC address** in the discovery ack — the first three octets
+are the vendor's IEEE OUI. Nothing is ever sent from the reported MAC, so
+`--mac` sets it to whatever a client wants to see:
+
+```
+$ python examples/noise_camera.py --interface eth0 \
+      --mac 00:30:53:12:34:56 --vendor Basler --model acA1300-30gm
+```
+
+Measured on this bench, with Aravis listing the same camera in every run as a
+control, and again with a matching MAC but the emulator's own vendor name:
+
+| client | enumerates with our own identity | what it wants |
+|---|---|---|
+| Aravis | yes | nothing |
+| ImpactAcquire (Balluff) | yes | nothing |
+| VimbaX (Allied Vision) | no | an Allied Vision OUI — `00:0a:47` or `00:0f:31` |
+| pylon (Basler) | no | a Basler OUI, `00:30:53`, **and** the vendor name `Basler` |
+
+Model and serial are free in both cases. Vendor names that are known to
+change client behaviour are logged as a warning rather than refused, because
+this is what they are for — but Aravis switches its own per-vendor workarounds
+on the same string, so borrowing one is not free.
+
+Two things worth being clear about. An OUI is assigned by the IEEE to a real
+company, so a borrowed one belongs in a deliberate flag on a private network
+and never in a default. And enumerating is not the same as working: a vendor's
+client may go on to ask for features only its own cameras have.
+
+Wanting a bigger read than Aravis does is a separate trap in the same area.
+pylon downloads the XML in 1256 byte reads where Aravis uses 512, and the
+device used to refuse anything over the smaller number — an open that failed
+with `Failed to read memory at 0x10000, 0x4e8 bytes` and looked like a
+corrupt XML. The limit is now what fits in one datagram.
+
 #### Tests ####
 
 ```

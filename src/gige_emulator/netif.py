@@ -114,3 +114,22 @@ def broadcast_address(ip, netmask):
 
 def format_mac(mac):
     return ":".join("%02x" % b for b in mac)
+
+
+def parse_mac(text):
+    """
+    The inverse of format_mac. Accepts colons or dashes, since the IEEE
+    registry and every vendor's documentation write the same six bytes both
+    ways.
+    """
+    parts = text.replace("-", ":").split(":")
+    if len(parts) != 6:
+        raise ValueError("a MAC address is six octets, e.g. 00:30:53:12:34:56;"
+                         " got %r" % text)
+    try:
+        octets = [int(part, 16) for part in parts]
+    except ValueError:
+        raise ValueError("%r is not hexadecimal" % text) from None
+    if any(octet < 0 or octet > 0xFF for octet in octets):
+        raise ValueError("%r has an octet outside 0x00..0xff" % text)
+    return bytes(octets)

@@ -29,7 +29,12 @@ class GigECameraServer(object):
                  retain_frames=None, link_utilisation=None):
 
         if interface is not None:
-            ip, netmask, mac = netif.interface_info(interface)
+            # The address has to be the interface's or the client cannot
+            # reach the device, but the MAC is only ever *reported* -- and
+            # some clients admit a device only if its first three octets are
+            # their own vendor's OUI, so a caller who supplies one keeps it.
+            ip, netmask, found_mac = netif.interface_info(interface)
+            mac = mac or found_mac
         if ip is None:
             raise ValueError("give either an interface name or an ip address")
 
