@@ -152,6 +152,32 @@ class EmulatedCamera(object):
                                               c.PIXEL_FORMAT_NAMES[pixel_format]),
                        min=1, max=0xFFFFFFFF))
 
+        # The stream channel's own registers, published as features rather
+        # than left in the bootstrap page alone.
+        #
+        # Aravis needs neither -- it knows the bootstrap layout and writes
+        # the registers directly -- but a client that works only from the XML
+        # cannot. pylon looks for a GevSCPSPacketSize node, does not find
+        # one, and says so before streaming with a packet size it guessed:
+        #
+        #   WARN: Packet size not changed because detection failed
+        #   INFO: Using default packet size as there is no GevSCPSPacketSize
+        #         node in 'Basler acA1440-220um#...'
+        #
+        # Which also means it can never negotiate a smaller MTU or use jumbo
+        # frames with this device. Aravis skips any name already in the
+        # document, so it uses these instead of injecting its own.
+        add(IntFeature("GevSCPSPacketSize",
+                       "Bytes per stream packet, including headers",
+                       "TransportLayerControl", "RW", transport=True,
+                       address=c.BS_SC0_PACKET_SIZE, lsb=31, msb=16,
+                       default=c.DEFAULT_PACKET_SIZE, min=64, max=16384,
+                       unit="B"))
+        add(IntFeature("GevSCPD", "Delay between stream packets, in timestamp "
+                       "ticks", "TransportLayerControl", "RW", transport=True,
+                       address=c.BS_SC0_PACKET_DELAY,
+                       default=0, min=0, max=0xFFFFFFFF))
+
         # SingleFrame is one frame per AcquisitionStart: the stream thread
         # clears self.acquiring once it has sent one, so the client has to
         # start again for the next. next_frame() sees no difference between

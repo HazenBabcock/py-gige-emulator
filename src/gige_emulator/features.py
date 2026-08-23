@@ -127,6 +127,12 @@ class Feature:
     #: refused while streaming. GenICam calls the same idea TLParamsLocked.
     affects_payload: bool = False
 
+    #: A GigE Vision transport layer register this device publishes on
+    #: purpose, at its fixed bootstrap address rather than in the feature
+    #: arena. Off for everything a camera declares: see the check in
+    #: FeatureSet.add() for why a Gev-prefixed name is otherwise refused.
+    transport: bool = False
+
     #: Names of features whose change makes this one's stored value wrong.
     #: Emitted as <pInvalidator>, which is the only thing that makes a client
     #: re-read. Without it a GUI shows the value it fetched when it built its
@@ -158,6 +164,14 @@ class IntFeature(Feature):
     max: int = 0xFFFFFFFF
     inc: int = 1
     unit: str = ""
+
+    #: Bit range for a register that is not entirely this feature, emitted as
+    #: <MaskedIntReg>. GenICam numbers bits from the most significant, so the
+    #: low half of a 32 bit register is lsb=31, msb=16 -- backwards from
+    #: everything else here, and checked against a client rather than
+    #: reasoned about.
+    lsb: int = None
+    msb: int = None
 
     #: Name of another feature that supplies this one's bound at runtime.
     #: Emitted as <pMin>/<pMax> in place of the literal, because GenICam
@@ -352,11 +366,22 @@ class FeatureSet(object):
         # Aravis injects its own nodes for every transport layer feature and
         # skips any name already in the document, so a collision here would
         # silently replace working plumbing with ours.
-        if feature.name.startswith("Gev") or feature.name.startswith("ArvGev"):
+        if ((feature.name.startswith("Gev") or feature.name.startswith("ArvGev"))
+                and not feature.transport):
             raise FeatureError(
                 "%r collides with the transport layer nodes the client "
                 "injects; camera features must not be Gev-prefixed"
                 % feature.name)
+
+        # A transport register lives at its address in the bootstrap page and
+        # is not ours to move. Publishing it is the point: pylon looks for
+        # GevSCPSPacketSize in the XML and, not finding a node, streams with
+        # a packet size it guessed rather than one it negotiated.
+        if feature.address is not None:
+            self.features.append(feature)
+            self.by_name[feature.name] = feature
+            self.by_address[feature.address] = feature
+            return feature
 
         size = feature.size
         # Align each register to its own size so a 4 byte read of a float

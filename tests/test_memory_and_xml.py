@@ -193,6 +193,10 @@ def test_an_ordinary_vendor_name_says_nothing(caplog):
 def test_features_land_in_the_arena_and_are_aligned():
     camera = DummyCamera()
     for feature in camera.feature_set.features:
+        if feature.transport:
+            # Lives at the address the GigE Vision standard gives it, in the
+            # bootstrap page, which is the whole point of publishing it.
+            continue
         assert c.FEATURE_ARENA_START <= feature.address < c.FEATURE_ARENA_END
         assert feature.address % (8 if feature.size == 8 else 4) == 0
 
@@ -584,7 +588,9 @@ def test_every_address_in_the_xml_matches_the_allocator():
     root = ElementTree.fromstring(xml)
     tag = "{%s}" % genicam_xml.SCHEMA_NS
     found = 0
-    for kind in ("IntReg", "FloatReg", "StringReg"):
+    # MaskedIntReg included: a feature that owns only part of a register is
+    # still a feature, and its address still has to be the allocator's.
+    for kind in ("IntReg", "FloatReg", "StringReg", "MaskedIntReg"):
         for element in root.iter(tag + kind):
             address = int(element.find(tag + "Address").text, 0)
             assert camera.feature_set.lookup_address(address) is not None
@@ -776,3 +782,51 @@ def test_an_element_out_of_order_is_reported():
                             invalidator + '\t\t<Address>0x8010</Address>', 1)
     problems = genicam_xml.validate_xml(broken.encode(), camera.feature_set)
     assert any("pInvalidator" in problem for problem in problems), problems
+
+
+# --- transport registers published as features ---------------------------
+#
+# Aravis needs none of this: it knows the bootstrap layout and writes the
+# registers directly. A client that works only from the XML cannot, and pylon
+# says so in its log before streaming with a packet size it guessed --
+# "Using default packet size as there is no GevSCPSPacketSize node".
+
+
+def test_the_stream_packet_size_is_published_where_the_standard_puts_it():
+    camera = DummyCamera()
+    feature = camera.feature_set.by_name["GevSCPSPacketSize"]
+    assert feature.address == c.BS_SC0_PACKET_SIZE
+    assert feature.transport and feature.access == "RW"
+
+
+def test_the_packet_size_is_masked_off_the_flags_it_shares_a_word_with():
+    """
+    The register carries a fire-a-test-packet bit and a do-not-fragment bit
+    above the size. A plain register node would read 0x40000578 as the packet
+    size rather than 1400.
+    """
+    camera = DummyCamera()
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy",
+                                "test-vendor").decode()
+    body = xml.split('<MaskedIntReg Name="GevSCPSPacketSizeReg"')[1]
+    body = body.split("</MaskedIntReg>")[0]
+    assert "<Address>0xd04</Address>" in body
+    assert "<LSB>31</LSB>" in body and "<MSB>16</MSB>" in body
+
+
+def test_a_gev_name_is_still_refused_from_a_camera():
+    """
+    The guard this relaxes is load bearing. Aravis injects its own node for
+    every transport feature and skips any name already in the document, so a
+    camera that declares one silently replaces working plumbing.
+    """
+    camera = DummyCamera()
+    with pytest.raises(FeatureError):
+        camera.feature_set.add(IntFeature("GevSCPSFireTestPacket", "", "TransportLayerControl",
+                                          "RW", default=0, min=0, max=1))
+
+
+def test_the_published_transport_nodes_do_not_trip_the_collision_check():
+    camera = DummyCamera()
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy", "test-vendor")
+    assert genicam_xml.validate_xml(xml, camera.feature_set) == []

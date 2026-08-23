@@ -38,6 +38,10 @@ class FeatureBridge(object):
         feature = self.features.lookup_address(address)
         if feature is None:
             return
+        if feature.transport:
+            # Written straight to the register by the client, and read from
+            # there by the stream channel. There is no camera behind it.
+            return
 
         try:
             current = self.camera.get_camera_settings()
@@ -70,6 +74,15 @@ class FeatureBridge(object):
         """
         feature = self.features.lookup_address(address)
         if feature is None:
+            return
+
+        if feature.transport:
+            # The client wrote the register the stream channel reads, and
+            # nothing else should happen: no camera hook, and no validation
+            # against the feature's bounds. The packet size shares its word
+            # with the fire-a-test-packet bit, so a write that means "probe
+            # at 9000 bytes" arrives here as a number far outside any range
+            # this feature would allow.
             return
 
         if isinstance(feature, CommandFeature):
@@ -178,6 +191,12 @@ class FeatureBridge(object):
         """Write every stored setting into its register. Called at startup."""
         with self.lock:
             for feature in self.features.features:
+                if feature.transport:
+                    # The bootstrap page already put the real value there,
+                    # and these registers carry flag bits this would encode
+                    # straight over -- the packet size shares its word with
+                    # a do-not-fragment bit.
+                    continue
                 if isinstance(feature, CommandFeature):
                     self.memory.poke_register(feature.address, 0)
                     continue

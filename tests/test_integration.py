@@ -1085,3 +1085,25 @@ def test_a_stream_going_back_to_the_client_says_nothing(client, server,
         client.receive_frame(packet_size)
         client.write_register(features["AcquisitionStop"].address, 1)
     assert "different path" not in caplog.text
+
+
+def test_a_packet_size_write_does_not_reach_the_camera(client, server):
+    """
+    It is the stream channel's register, not a camera setting. Routing it
+    through the feature machinery would also validate it, and a write meaning
+    "probe at 9000 bytes" arrives with the fire bit set -- a number far
+    outside any range the feature would allow.
+    """
+    client.take_control()
+    before = list(server.camera.applied)
+    client.write_register(c.BS_SC0_PACKET_SIZE, 1234)
+    assert server.camera.applied == before
+    assert (server.memory.peek_register(c.BS_SC0_PACKET_SIZE)
+            & c.SC_PACKET_SIZE_MASK) == 1234
+
+
+def test_publishing_the_packet_size_did_not_move_it(client, server):
+    # The bootstrap page owns the value; the feature is a view of it. Syncing
+    # the feature's default over the top would quietly undo --packet-size.
+    assert (server.memory.peek_register(c.BS_SC0_PACKET_SIZE)
+            & c.SC_PACKET_SIZE_MASK) == c.DEFAULT_PACKET_SIZE

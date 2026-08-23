@@ -100,11 +100,20 @@ def _emit_feature(feature, out):
         if feature.unit:
             out.append("\t\t<Unit>%s</Unit>" % escape(feature.unit))
         out.append("\t</Integer>")
-        out.append('\t<IntReg Name="%s" NameSpace="Custom">' % reg)
+        masked = feature.lsb is not None and feature.msb is not None
+        tag = "MaskedIntReg" if masked else "IntReg"
+        out.append('\t<%s Name="%s" NameSpace="Custom">' % (tag, reg))
         _common_reg_body(feature, out)
+        if masked:
+            # The value shares its register with flag bits -- the stream
+            # channel's packet size sits under a fire-test bit and a
+            # do-not-fragment bit -- so a plain register node would read the
+            # flags as part of the number.
+            out.append("\t\t<LSB>%d</LSB>" % feature.lsb)
+            out.append("\t\t<MSB>%d</MSB>" % feature.msb)
         out.append("\t\t<Sign>Unsigned</Sign>")
         out.append("\t\t<Endianess>BigEndian</Endianess>")
-        out.append("\t</IntReg>")
+        out.append("\t</%s>" % tag)
 
     elif isinstance(feature, FloatFeature):
         out.append('\t<Float Name="%s" NameSpace="%s">' % (name, _namespace(name)))
@@ -280,6 +289,10 @@ CHILD_ORDER = {
                  "Address", "Length", "AccessMode", "pPort", "Cachable",
                  "PollingTime", "pInvalidator", "Endianess", "Unit",
                  "Representation"),
+    "MaskedIntReg": ("ToolTip", "Description", "DisplayName", "Visibility",
+                     "Address", "Length", "AccessMode", "pPort", "Cachable",
+                     "PollingTime", "pInvalidator", "LSB", "MSB", "Sign",
+                     "Endianess", "Unit", "Representation"),
     "StringReg": ("ToolTip", "Description", "DisplayName", "Visibility",
                   "Address", "Length", "AccessMode", "pPort", "Cachable",
                   "PollingTime", "pInvalidator"),
@@ -330,6 +343,11 @@ def validate_xml(xml_bytes, feature_set):
     root = ElementTree.fromstring(xml_bytes)
     problems = []
 
+    # Transport registers this device publishes on purpose. Everything else
+    # carrying a Gev name is a collision with the nodes the client injects.
+    published = {f.name for f in feature_set.features if f.transport}
+    published |= {f.name + "Reg" for f in feature_set.features if f.transport}
+
     tag = "{%s}" % SCHEMA_NS
     if not root.tag.endswith("RegisterDescription"):
         problems.append("root element is %r" % root.tag)
@@ -340,7 +358,8 @@ def validate_xml(xml_bytes, feature_set):
         if name is None:
             continue
         names.add(name)
-        if name.startswith("Gev") or name.startswith("ArvGev"):
+        if ((name.startswith("Gev") or name.startswith("ArvGev"))
+                and name not in published):
             problems.append("%r collides with an injected transport node" % name)
 
     if "Device" not in names:
@@ -383,6 +402,8 @@ def validate_xml(xml_bytes, feature_set):
         _check_address(element, tag, feature_set, problems)
     for element in root.iter(tag + "StringReg"):
         _check_address(element, tag, feature_set, problems)
+    for element in root.iter(tag + "MaskedIntReg"):
+        _check_address(element, tag, feature_set, problems)
 
     return problems
 
@@ -394,11 +415,15 @@ def _check_address(element, tag, feature_set, problems):
         problems.append("%s has no <Address>" % name)
         return
     address = int(address_element.text, 0)
-    if not (feature_set.arena_start <= address < feature_set.arena_end):
-        problems.append("%s address 0x%x is outside the feature arena"
-                        % (name, address))
-        return
     feature = feature_set.lookup_address(address)
+    # A transport register belongs in the bootstrap page, at the address the
+    # standard gives it, and is the one kind of node that is meant to sit
+    # outside the arena.
+    if not (feature_set.arena_start <= address < feature_set.arena_end):
+        if feature is None or not feature.transport:
+            problems.append("%s address 0x%x is outside the feature arena"
+                            % (name, address))
+        return
     if feature is None:
         problems.append("%s address 0x%x matches no allocated feature"
                         % (name, address))
