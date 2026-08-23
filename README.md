@@ -268,25 +268,29 @@ $ sudo sysctl -w net.core.rmem_max=20000000
 $ sudo sysctl -w net.core.rmem_default=20000000
 ```
 
-**A frame that does not fit in the client's socket buffer will fail every
-time.** A frame goes out as one uninterrupted burst, so the client has to
-drain it as it arrives; once the burst is larger than the buffer, any
-scheduling hiccup loses packets — and the resends land in the same overrun
-buffer, so asking again does not help. The cutoff is sharp rather than
-gradual. Measured against an IMX477 with `rmem_max` at 16.8 MB, **before
-resend existed**, so the failures below are what a lost packet cost then:
+**A frame larger than the client's socket buffer loses packets**, and resend
+is the whole of what stands between that and a lost frame. A frame goes out as
+one uninterrupted burst, so the client has to drain it as it arrives; once the
+burst is bigger than the buffer, any scheduling hiccup drops packets. Measured
+against an IMX477 with `rmem_max` at 16.8 MB, 20 s per row:
 
-| frame | packets | result |
-|---|---|---|
-| 2028x1520 RGB8, 9.2 MB | 6,282 | 126 frames, **0 failures, 0 missing packets** |
-| 4056x3040 BayerBG16, 24.7 MB | 16,753 | 0 frames, 50 failures |
-| 4056x3040 RGB8, 37.0 MB | 27,120 | 0 frames, 54 failures |
+| frame | packets | completed | failed | missing packets | resend requests |
+|---|---|---|---|---|---|
+| 2028x1520 RGB8, 9.2 MB | 6,282 | 200 | **0** | 0 | 3,721 |
+| 4056x3040 BayerBG16, 24.7 MB | 16,753 | 81 | 7 | 63,741 | 343,271 |
+| 4056x3040 RGB8, 37.0 MB | 27,120 | 57 | 1 | 27,121 | 101,917 |
+
+Before resend existed the bottom two rows completed **no frames at all**, 50
+and 54 failures, and this section said the cutoff was sharp. It is not any
+more: most frames now arrive, bought with a great deal of resend traffic and
+roughly half the frames skipped outright. Note the top row is clean only
+because resend made it so — 3,721 requests behind those zeros.
 
 Two ways out, and the second needs no root. Raise `rmem_max` past the frame
 size — 20 MB is not enough for a full frame from a 12 MPix sensor, so size it
 from your payload. Or set the packet delay, which paces the burst so the
-client can keep up: the same 37 MB frame that failed every time goes to **25
-frames, 0 failures, 0 missing packets** with 20 µs between packets
+client can keep up: the same 37 MB frame goes to **29 frames, 0 failures, 0
+missing packets and no resend requests at all** with 20 µs between packets
 (`arv-camera-test -a -m 5000 -y 20000`). That costs 0.54 s of pacing per
 frame, so it buys correctness with frame rate — worth tuning down until it
 starts failing.
