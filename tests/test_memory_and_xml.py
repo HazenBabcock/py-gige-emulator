@@ -721,3 +721,58 @@ def test_moving_the_window_is_refused_while_acquiring():
     camera = DummyCamera(roi=True, sensor_width=64, sensor_height=64)
     assert camera.feature_set.by_name["OffsetX"].affects_payload
     assert camera.feature_set.by_name["OffsetY"].affects_payload
+
+
+# --- element order -------------------------------------------------------
+#
+# GenICam declares a node's children as a sequence. Aravis ignores that and
+# reads the document anyway, so a file that works against every client on the
+# bench can still be unloadable by the vendor client it was written for --
+# VimbaX answered one with InternalFault and nothing else, and only its own
+# log named the line.
+
+
+class InvalidatedCamera(EmulatedCamera):
+    extra_features = (
+        FloatFeature("ExposureTime", "", "AcquisitionControl", "RW",
+                     default=1000.0, min=1.0, max=1e6, unit="us"),
+        FloatFeature("AcquisitionFrameRateMax", "", "AcquisitionControl", "RO",
+                     invalidated_by=("ExposureTime",),
+                     default=0.0, min=0.0, max=1e4, unit="Hz"),
+    )
+
+    def next_frame(self):
+        return b""
+
+
+def test_an_invalidator_is_emitted_after_the_port():
+    xml = genicam_xml.build_xml(InvalidatedCamera().feature_set, "Dummy",
+                                "test-vendor").decode()
+    body = xml.split('<FloatReg Name="AcquisitionFrameRateMaxReg"')[1]
+    body = body.split("</FloatReg>")[0]
+    assert body.index("<pPort>") < body.index("<pInvalidator>")
+
+
+def test_the_generated_xml_is_in_schema_order():
+    camera = InvalidatedCamera(roi=True, sensor_width=64, sensor_height=64)
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy", "test-vendor")
+    assert genicam_xml.validate_xml(xml, camera.feature_set) == []
+
+
+def test_an_element_out_of_order_is_reported():
+    """
+    The guard has to fail on a document that is wrong, or it is only
+    asserting that today's generator agrees with itself.
+    """
+    camera = InvalidatedCamera()
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy",
+                                "test-vendor").decode()
+    invalidator = "\t\t<pInvalidator>ExposureTimeReg</pInvalidator>\n"
+    assert invalidator in xml
+    # Back where it used to be: ahead of the address, which is how every
+    # camera with a moving bound was served until a strict client refused it.
+    broken = xml.replace(invalidator, "")
+    broken = broken.replace('\t\t<Address>0x8010</Address>',
+                            invalidator + '\t\t<Address>0x8010</Address>', 1)
+    problems = genicam_xml.validate_xml(broken.encode(), camera.feature_set)
+    assert any("pInvalidator" in problem for problem in problems), problems

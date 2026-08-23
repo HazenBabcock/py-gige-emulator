@@ -36,16 +36,24 @@ def _reg_name(feature):
 
 
 def _common_reg_body(feature, out, indent="\t\t"):
-    # The invalidators go on the *register* node, not on the feature node
-    # above it, and that placement is the whole point. The cached value lives
-    # in the register; invalidating the feature alone leaves the register
-    # cache intact and the client serves the same stale number back from it.
-    for name in feature.invalidated_by:
-        out.append("%s<pInvalidator>%sReg</pInvalidator>" % (indent, name))
     out.append("%s<Address>0x%x</Address>" % (indent, feature.address))
     out.append("%s<Length>%d</Length>" % (indent, feature.size))
     out.append("%s<AccessMode>%s</AccessMode>" % (indent, feature.access))
     out.append("%s<pPort>Device</pPort>" % indent)
+    # The invalidators go on the *register* node, not on the feature node
+    # above it, and that placement is the whole point. The cached value lives
+    # in the register; invalidating the feature alone leaves the register
+    # cache intact and the client serves the same stale number back from it.
+    #
+    # After pPort, and that is not cosmetic. The schema declares a register's
+    # children as a sequence -- address, length, access mode, port, then the
+    # invalidators, then whatever the specific register type adds -- and a
+    # strict parser stops at the first element out of place. Aravis reads
+    # this file either way; GenApi does not, so with these emitted first
+    # VimbaX refused every camera that had one with "expected element not
+    # encountered" and an unhelpful InternalFault at the API.
+    for name in feature.invalidated_by:
+        out.append("%s<pInvalidator>%sReg</pInvalidator>" % (indent, name))
 
 
 def _bound(feature, which, out):
@@ -249,6 +257,70 @@ def unzip_xml(blob):
         return archive.read(archive.namelist()[0])
 
 
+#: The order GenICam's schema requires a node's children to appear in. It
+#: declares them as a sequence, not a set, so a strict parser stops at the
+#: first element out of place -- and stopping means the whole document is
+#: rejected and the camera cannot be opened at all.
+#:
+#: Aravis does not check, which is what makes this worth validating here:
+#: a document that works perfectly against every client on the bench can be
+#: unloadable by the vendor client it was written for. VimbaX answered one
+#: with InternalFault and no further detail; the reason was only visible in
+#: its own log, as "expected element not encountered" at a line number.
+#:
+#: Only the elements this generator emits are listed. Anything absent from
+#: the list is ignored rather than rejected, so adding an element means
+#: adding it here in the right place.
+CHILD_ORDER = {
+    "IntReg": ("ToolTip", "Description", "DisplayName", "Visibility",
+               "Address", "Length", "AccessMode", "pPort", "Cachable",
+               "PollingTime", "pInvalidator", "Sign", "Endianess", "Unit",
+               "Representation"),
+    "FloatReg": ("ToolTip", "Description", "DisplayName", "Visibility",
+                 "Address", "Length", "AccessMode", "pPort", "Cachable",
+                 "PollingTime", "pInvalidator", "Endianess", "Unit",
+                 "Representation"),
+    "StringReg": ("ToolTip", "Description", "DisplayName", "Visibility",
+                  "Address", "Length", "AccessMode", "pPort", "Cachable",
+                  "PollingTime", "pInvalidator"),
+    "Integer": ("ToolTip", "Description", "DisplayName", "Visibility",
+                "Value", "pValue", "Min", "pMin", "Max", "pMax", "Inc",
+                "pInc", "Unit", "Representation"),
+    "Float": ("ToolTip", "Description", "DisplayName", "Visibility",
+              "Value", "pValue", "Min", "pMin", "Max", "pMax", "Unit",
+              "Representation", "DisplayNotation", "DisplayPrecision"),
+    "Enumeration": ("ToolTip", "Description", "DisplayName", "Visibility",
+                    "EnumEntry", "pValue"),
+    "EnumEntry": ("ToolTip", "Description", "DisplayName", "Visibility",
+                  "Value", "NumericValue"),
+    "Command": ("ToolTip", "Description", "DisplayName", "Visibility",
+                "pValue", "CommandValue"),
+    "Category": ("ToolTip", "Description", "DisplayName", "Visibility",
+                 "pFeature"),
+}
+
+
+def _check_child_order(element, tag, problems):
+    order = CHILD_ORDER.get(element.tag[len(tag):])
+    if order is None:
+        return
+    seen = -1
+    for child in element:
+        if not child.tag.startswith(tag):
+            continue
+        local = child.tag[len(tag):]
+        if local not in order:
+            continue
+        position = order.index(local)
+        if position < seen:
+            problems.append(
+                "%s %r puts <%s> after <%s>; the schema wants it before"
+                % (element.tag[len(tag):], element.get("Name"), local,
+                   order[seen]))
+            return
+        seen = max(seen, position)
+
+
 def validate_xml(xml_bytes, feature_set):
     """
     Structural checks that would otherwise only show up as a client that
@@ -300,6 +372,9 @@ def validate_xml(xml_bytes, feature_set):
                                 "no numeric value"
                                 % (feature.name, which, pointer,
                                    type(target).__name__))
+
+    for element in root.iter():
+        _check_child_order(element, tag, problems)
 
     # Every address in the document must match what the allocator assigned.
     for element in root.iter(tag + "IntReg"):
