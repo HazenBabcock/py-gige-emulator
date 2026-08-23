@@ -661,3 +661,63 @@ def test_deflate_that_does_not_shrink_makes_a_bigger_archive():
     import random
     incompressible = random.Random(20250808).randbytes(4096)
     assert len(genicam_xml.zip_xml(incompressible, "x")) > len(incompressible)
+
+
+# --- region of interest --------------------------------------------------
+#
+# Off unless the camera asks for it. A writable Width on a device that cannot
+# honour one is worse than none: arv-viewer builds a spin box from the
+# feature and does not grey out read-only ones, so the user gets a control
+# that looks adjustable and answers every write with a protocol error.
+
+
+def test_geometry_is_read_only_unless_a_camera_asks_for_an_roi():
+    camera = DummyCamera()
+    assert camera.feature_set.by_name["Width"].access == "RO"
+    assert camera.feature_set.by_name["Height"].access == "RO"
+    assert "OffsetX" not in camera.feature_set.by_name
+    assert "OffsetY" not in camera.feature_set.by_name
+
+
+def test_an_roi_opens_the_size_and_adds_the_offsets():
+    camera = DummyCamera(roi=True, sensor_width=1456, sensor_height=1088,
+                         width=1440, height=1080, offset=(8, 4))
+    for name in ("Width", "Height", "OffsetX", "OffsetY"):
+        assert camera.feature_set.by_name[name].access == "RW"
+    assert camera.settings["OffsetX"] == 8
+    assert camera.settings["OffsetY"] == 4
+
+
+def test_the_sensors_own_increments_reach_the_feature():
+    """
+    A real sensor steps its ROI in fours or eights, and a client that is not
+    told sends 1441 and gets a refusal it cannot explain. GenICam carries it
+    as <Inc>, so it has to survive into the XML as well as the feature.
+    """
+    camera = DummyCamera(roi=True, sensor_width=1456, sensor_height=1088,
+                         roi_bounds={"Width": (4, 1456, 4),
+                                     "Height": (1, 1088, 1),
+                                     "OffsetX": (0, 1452, 4),
+                                     "OffsetY": (0, 1087, 2)})
+    width = camera.feature_set.by_name["Width"]
+    assert (width.min, width.max, width.inc) == (4, 1456, 4)
+    assert camera.feature_set.by_name["OffsetY"].inc == 2
+
+    xml = genicam_xml.build_xml(camera.feature_set, "Dummy", "test-vendor")
+    root = ElementTree.fromstring(xml)
+    ns = {"g": root.tag.split("}")[0].strip("{")}
+    integer = [node for node in root.findall("g:Integer", ns)
+               if node.get("Name") == "Width"]
+    assert integer, "Width should be an Integer node"
+    assert integer[0].find("g:Inc", ns).text == "4"
+
+
+def test_moving_the_window_is_refused_while_acquiring():
+    """
+    OffsetX does not resize anything, so it carries affects_payload for the
+    other half of that flag: a client that has already sized its buffers and
+    worked out its packet count cannot have the picture move under it.
+    """
+    camera = DummyCamera(roi=True, sensor_width=64, sensor_height=64)
+    assert camera.feature_set.by_name["OffsetX"].affects_payload
+    assert camera.feature_set.by_name["OffsetY"].affects_payload

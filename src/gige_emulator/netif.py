@@ -7,6 +7,7 @@
 #
 
 import fcntl
+import hashlib
 import os
 import socket
 import struct
@@ -133,3 +134,23 @@ def parse_mac(text):
     if any(octet < 0 or octet > 0xFF for octet in octets):
         raise ValueError("%r has an octet outside 0x00..0xff" % text)
     return bytes(octets)
+
+
+def mac_from_serial(oui, serial):
+    """
+    A stable MAC for a camera that has no MAC of its own -- a USB camera
+    being served as a network device, say.
+
+    The first three octets are the vendor OUI, which is what a client may
+    insist on seeing. The last three are a digest of the camera's serial, so
+    two cameras of the same make never collide and a given camera keeps the
+    same address across restarts, which matters because some clients
+    remember a device by it.
+
+    Nothing is ever sent from this address; it is reported and nothing else.
+    """
+    parts = oui.replace("-", ":").split(":")
+    if len(parts) != 3:
+        raise ValueError("an OUI is three octets, e.g. 00:30:53; got %r" % oui)
+    prefix = parse_mac(":".join(parts + ["00", "00", "00"]))[:3]
+    return prefix + hashlib.sha1(serial.encode("utf-8")).digest()[:3]

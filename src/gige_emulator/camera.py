@@ -41,7 +41,8 @@ class EmulatedCamera(object):
 
     def __init__(self, width=640, height=480, pixel_format="Mono8",
                  pixel_formats=None, sensor_width=None, sensor_height=None,
-                 frame_rate=10.0, max_frame_rate=1000.0):
+                 frame_rate=10.0, max_frame_rate=1000.0,
+                 roi=False, roi_bounds=None, offset=(0, 0)):
 
         if pixel_formats is None:
             pixel_formats = [pixel_format]
@@ -58,7 +59,7 @@ class EmulatedCamera(object):
         self._build_core_features(width, height, pixel_format, pixel_formats,
                                   sensor_width or width,
                                   sensor_height or height, frame_rate,
-                                  max_frame_rate)
+                                  max_frame_rate, roi, roi_bounds, offset)
         self.feature_set.extend(list(self.extra_features))
 
         self.settings = self.feature_set.defaults()
@@ -70,8 +71,16 @@ class EmulatedCamera(object):
 
     def _build_core_features(self, width, height, pixel_format, pixel_formats,
                              sensor_width, sensor_height, frame_rate,
-                             max_frame_rate=1000.0):
+                             max_frame_rate=1000.0, roi=False,
+                             roi_bounds=None, offset=(0, 0)):
         add = self.feature_set.add
+        bounds = dict(roi_bounds or {})
+
+        def limits(name, low, high):
+            """(min, max, inc) for one geometry feature, from the camera if
+            it said, and the widest thing that could be true if it did not."""
+            low, high, inc = bounds.get(name, (low, high, 1))
+            return {"min": low, "max": high, "inc": inc}
 
         add(IntFeature("SensorWidth", "Sensor width in pixels",
                        "ImageFormatControl", "RO", default=sensor_width,
@@ -79,12 +88,38 @@ class EmulatedCamera(object):
         add(IntFeature("SensorHeight", "Sensor height in pixels",
                        "ImageFormatControl", "RO", default=sensor_height,
                        min=1, max=sensor_height))
+        # Read only unless the camera says it can take an ROI. A writable
+        # Width on a device that cannot honour one is worse than no control:
+        # arv-viewer builds a spin box from the feature and does not grey out
+        # read-only ones, so the user gets something that looks adjustable
+        # and answers every write with a protocol error.
+        #
+        # The increments matter as much as the bounds. Real sensors step
+        # their ROI in fours or eights, and a client that does not know that
+        # sends 1441 and gets a refusal it cannot explain.
         add(IntFeature("Width", "Image width in pixels",
-                       "ImageFormatControl", "RO", affects_payload=True,
-                       default=width, min=1, max=sensor_width))
+                       "ImageFormatControl", "RW" if roi else "RO",
+                       affects_payload=True, default=width,
+                       **limits("Width", 1, sensor_width)))
         add(IntFeature("Height", "Image height in pixels",
-                       "ImageFormatControl", "RO", affects_payload=True,
-                       default=height, min=1, max=sensor_height))
+                       "ImageFormatControl", "RW" if roi else "RO",
+                       affects_payload=True, default=height,
+                       **limits("Height", 1, sensor_height)))
+        if roi:
+            # affects_payload, although moving a window does not resize it.
+            # The flag carries two behaviours and this needs both: refuse
+            # while acquiring, because a client has already sized its buffers
+            # and computed its packet count, and re-publish the geometry
+            # afterwards, because a camera asked for an offset it cannot
+            # reach at the current width may answer by moving the width too.
+            add(IntFeature("OffsetX", "Left edge of the region of interest",
+                           "ImageFormatControl", "RW", affects_payload=True,
+                           default=offset[0],
+                           **limits("OffsetX", 0, max(0, sensor_width - 1))))
+            add(IntFeature("OffsetY", "Top edge of the region of interest",
+                           "ImageFormatControl", "RW", affects_payload=True,
+                           default=offset[1],
+                           **limits("OffsetY", 0, max(0, sensor_height - 1))))
         # Writable exactly when there is something to choose. Advertising
         # several formats on a read-only feature is what this used to do, and
         # a client then draws a populated combo box that refuses every

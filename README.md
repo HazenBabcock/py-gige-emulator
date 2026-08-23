@@ -54,9 +54,11 @@ GigECameraServer(camera, interface="eth0",
 $ python examples/noise_camera.py  --interface eth0     # no hardware needed
 $ python examples/opencv_camera.py --interface eth0     # any cv2.VideoCapture camera
 $ python examples/pi_camera.py     --interface eth0     # Raspberry Pi HQ camera
+$ python examples/basler_camera.py --interface eth0     # Basler USB camera, via pypylon
+$ python examples/allied_vision_camera.py --interface eth0   # Alvium USB, via vmbpy
 ```
 
-then point any GigE Vision client at it. All three take `--interface` to pick
+then point any GigE Vision client at it. They all take `--interface` to pick
 which network interface the camera appears on — naming one that does not exist
 prints the ones that do — and `--name` to set the camera's user-defined name:
 
@@ -96,6 +98,37 @@ picks the sensor readout from it, and the shallower ones are markedly faster.
 At 1332x990 that is a measured 147.8 fps against 101.8. A bare `WIDTHxHEIGHT`
 takes the deepest readout of that size. A webcam has no equivalent, so
 `opencv_camera.py` takes a size alone.
+
+The two vendor examples are a different shape from the others. Both wrap a
+**USB3 Vision** camera, so they are not one network protocol repackaged as
+another: they put a camera with no network interface of its own onto the
+network. Both read their vendor, model and serial off the camera at startup
+and report those, and both default their MAC to their vendor's OUI, because
+neither vendor's client will enumerate a device without one — see "Not
+showing up in a vendor's client" below. Pass `--mac none` to report the
+interface's own address instead.
+
+They expose the region of interest, exposure and its automatic mode, the
+frame rate, the pixel format and binning, with every bound read from the
+camera rather than written down: the exposure range, the ROI increments, the
+formats that exist. A client builds its controls from those, so an invented
+bound produces a control that refuses half its own range.
+
+```
+$ python examples/basler_camera.py --list
+Basler           acA1440-220um      40272323     BaslerUsb
+$ python examples/basler_camera.py --interface eno1 --reset
+serving Basler acA1440-220um (40272323) at 1456x1088 Mono12, ctrl-c to exit.
+```
+
+`--reset` puts the camera back to full frame with no binning first. It is off
+by default, because a camera is entitled to keep the settings it was left in
+and a vendor's own viewer does not reset one either — but those settings
+outlive the process that made them, so an ROI left behind by an earlier run
+is otherwise inherited in silence.
+
+`allied_vision_camera.py` needs `GENICAM_GENTL64_PATH` pointing at VimbaX's
+`cti` directory; vmbpy fails with "No TL detected" without it.
 
 **`--mode` and `--pixel-format` are independent**, which is the easy thing to
 trip over. `--mode` chooses how the *sensor* is read — those are the `SRGGB…`
