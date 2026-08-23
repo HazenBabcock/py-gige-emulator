@@ -1,1 +1,0 @@
-python opencv_camera.py --interface enxf8e43b0b54db --mode 640x480 --vendor Aravis --model Fake --serial GV01 --pixel-format RGB8
