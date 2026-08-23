@@ -157,8 +157,27 @@ class Feature:
         return value
 
 
+class _U32Register(object):
+    """
+    A value stored as one big endian unsigned word, which is what a GigE
+    Vision register is.
+
+    Three feature types keep their value that way -- an integer, a command's
+    trigger value and an enumeration's numeric entry -- and they had a copy of
+    this each. Worth sharing rather than repeating: a codec that disagreed
+    with the register width would not raise, it would hand a client a
+    plausible wrong number.
+    """
+
+    def encode(self, value):
+        return struct.pack(">I", int(value) & 0xFFFFFFFF)
+
+    def decode(self, raw):
+        return struct.unpack(">I", raw)[0]
+
+
 @dataclass
-class IntFeature(Feature):
+class IntFeature(_U32Register, Feature):
     default: int = 0
     min: int = 0
     max: int = 0xFFFFFFFF
@@ -186,12 +205,6 @@ class IntFeature(Feature):
     p_max: str = None
 
     size = 4
-
-    def encode(self, value):
-        return struct.pack(">I", int(value) & 0xFFFFFFFF)
-
-    def decode(self, raw):
-        return struct.unpack(">I", raw)[0]
 
     def validate(self, value):
         value = int(value)
@@ -229,7 +242,7 @@ class FloatFeature(Feature):
 
 
 @dataclass
-class EnumFeature(Feature):
+class EnumFeature(_U32Register, Feature):
     entries: dict = field(default_factory=dict)
     default: str = None
 
@@ -250,10 +263,10 @@ class EnumFeature(Feature):
                 raise FeatureError("%s: %r is not a valid entry"
                                    % (self.name, value))
             value = self.entries[value]
-        return struct.pack(">I", int(value) & 0xFFFFFFFF)
+        return super().encode(value)
 
     def decode(self, raw):
-        value = struct.unpack(">I", raw)[0]
+        value = super().decode(raw)
         for name, entry in self.entries.items():
             if entry == value:
                 return name
@@ -285,7 +298,7 @@ class EnumFeature(Feature):
 
 
 @dataclass
-class CommandFeature(Feature):
+class CommandFeature(_U32Register, Feature):
     """
     A GenICam Command writes its CommandValue to a register. The device
     observes the write, acts, then clears the register -- which is what
@@ -295,12 +308,6 @@ class CommandFeature(Feature):
 
     size = 4
     settable = False
-
-    def encode(self, value):
-        return struct.pack(">I", int(value) & 0xFFFFFFFF)
-
-    def decode(self, raw):
-        return struct.unpack(">I", raw)[0]
 
 
 @dataclass

@@ -31,16 +31,30 @@ class FeatureBridge(object):
 
     # --- reads -----------------------------------------------------------
 
+    def _camera_feature(self, address):
+        """
+        The feature at this address, or None when there is nothing here for a
+        camera to be told about.
+
+        Two cases return None and they are not the same. The address may not
+        be a feature at all -- most of the bootstrap page is not. Or it may be
+        a transport register: the client writes it, the stream channel reads
+        it, and there is no camera behind it. Those must not reach the hooks
+        or the bounds check, because the packet size shares its word with a
+        fire-a-test-packet bit, so a write meaning "probe at 9000 bytes"
+        arrives as a number far outside any range the feature allows.
+        """
+        feature = self.features.lookup_address(address)
+        if feature is None or feature.transport:
+            return None
+        return feature
+
     def before_read(self, address, length):
         """
         Refresh whatever the client is about to read. Called with no lock.
         """
-        feature = self.features.lookup_address(address)
+        feature = self._camera_feature(address)
         if feature is None:
-            return
-        if feature.transport:
-            # Written straight to the register by the client, and read from
-            # there by the stream channel. There is no camera behind it.
             return
 
         try:
@@ -72,17 +86,8 @@ class FeatureBridge(object):
         MemoryError_ rolls the register back and answers the client with an
         error rather than a success that did nothing.
         """
-        feature = self.features.lookup_address(address)
+        feature = self._camera_feature(address)
         if feature is None:
-            return
-
-        if feature.transport:
-            # The client wrote the register the stream channel reads, and
-            # nothing else should happen: no camera hook, and no validation
-            # against the feature's bounds. The packet size shares its word
-            # with the fire-a-test-packet bit, so a write that means "probe
-            # at 9000 bytes" arrives here as a number far outside any range
-            # this feature would allow.
             return
 
         if isinstance(feature, CommandFeature):
