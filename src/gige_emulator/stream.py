@@ -114,6 +114,10 @@ class StreamChannel(object):
                                     if link_utilisation is None
                                     else link_utilisation))
 
+        #: (control ip, stream ip) the mismatch warning last fired for, so a
+        #: client that means it is told once rather than every frame.
+        self._warned_destination = None
+
         self.frame_id = 0
         self.n_frames = 0
         self.n_packets = 0
@@ -443,6 +447,7 @@ class StreamChannel(object):
             target = self._stream_target()
             if target is None:
                 return None
+            self._check_destination(target)
             packet_size = (self.memory.peek_register(c.BS_SC0_PACKET_SIZE)
                            & c.SC_PACKET_SIZE_MASK)
             packet_delay = self.memory.peek_register(c.BS_SC0_PACKET_DELAY)
@@ -451,6 +456,33 @@ class StreamChannel(object):
                 return None
             mode = self.camera.settings.get("AcquisitionMode", "Continuous")
             return target, packet_size, packet_delay, geometry, mode
+
+    def _check_destination(self, target):
+        """
+        Say something when the client asks for the images at an address it is
+        not talking to us from.
+
+        Perfectly legal, and sometimes deliberate -- a client can hand the
+        stream to another machine. But on a host with two interfaces on one
+        subnet it is usually an accident, and an expensive one: the commands
+        go over one interface and the images over the other, so a camera on a
+        wire ends up delivering its frames over WiFi. That presents as
+        latency, or as frames that arrive damaged, and nothing else in the
+        system says why. Both addresses are printed because which is which is
+        the whole question.
+        """
+        if self.control is None:
+            return
+        controller = self.control.controller
+        if controller is None or controller[0] == target[0]:
+            return
+        if self._warned_destination == (controller[0], target[0]):
+            return
+        self._warned_destination = (controller[0], target[0])
+        log.warning("the client controlling this camera is at %s but asked "
+                    "for the stream at %s; if those are two interfaces on one "
+                    "machine, the images are taking a different path from the "
+                    "commands", controller[0], target[0])
 
     def _run(self):
         while self.running:

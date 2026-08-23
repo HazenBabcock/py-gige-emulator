@@ -3,6 +3,7 @@
 #
 
 import logging
+import socket
 import struct
 import time
 import xml.etree.ElementTree as ElementTree
@@ -1041,3 +1042,46 @@ def test_stopping_during_a_long_exposure_does_not_kill_the_stream_thread():
         "stream thread raised on shutdown: %s"
         % [f.exc_value for f in failures])
     assert not any(t.name == "gvsp-stream" for t in threading.enumerate())
+
+
+# --- images going somewhere the commands are not ------------------------
+
+
+def test_a_stream_pointed_at_another_address_is_called_out(client, server,
+                                                           caplog):
+    """
+    Legal, and occasionally deliberate. But two interfaces on one subnet make
+    it an easy accident, and an expensive one -- commands over the wire,
+    images over WiFi, presenting as damaged frames with nothing to say why.
+    Measured on the bench: pylon controlled the camera from 192.168.1.224 and
+    asked for the stream at 192.168.1.252, the same machine's wireless
+    address, and only a packet capture showed it.
+    """
+    client.take_control()
+    client.open_stream()
+    features = server.camera.feature_set.by_name
+
+    # Somewhere else on loopback. Nothing reads it, which is the point: this
+    # is what a client that named the wrong interface looks like.
+    elsewhere = struct.unpack("!I", socket.inet_aton("127.0.0.2"))[0]
+    client.write_register(c.BS_SC0_IP_ADDRESS, elsewhere)
+
+    with caplog.at_level(logging.WARNING, logger="gige_emulator.stream"):
+        client.write_register(features["AcquisitionStart"].address, 1)
+        time.sleep(0.3)
+        client.write_register(features["AcquisitionStop"].address, 1)
+
+    assert "127.0.0.1" in caplog.text and "127.0.0.2" in caplog.text
+    assert "different path" in caplog.text
+
+
+def test_a_stream_going_back_to_the_client_says_nothing(client, server,
+                                                        caplog):
+    client.take_control()
+    packet_size = client.open_stream()
+    features = server.camera.feature_set.by_name
+    with caplog.at_level(logging.WARNING, logger="gige_emulator.stream"):
+        client.write_register(features["AcquisitionStart"].address, 1)
+        client.receive_frame(packet_size)
+        client.write_register(features["AcquisitionStop"].address, 1)
+    assert "different path" not in caplog.text
