@@ -306,7 +306,14 @@ class BaslerCamera(EmulatedCamera):
         value reaches it as a reading of what actually happened.
         """
         value = max(node.Min, min(node.Max, value))
-        inc = getattr(node, "Inc", 1)
+        try:
+            inc = node.Inc
+        except genicam.GenericException:
+            # Not every node has one, and asking one that does not is an
+            # exception rather than a None -- which reached the client as
+            # "AcquisitionFrameRate rejected by the camera: node does not
+            # have an increment", refusing a perfectly good write.
+            inc = None
         if inc and inc > 1:
             value = node.Min + ((value - node.Min) // inc) * inc
         return value
