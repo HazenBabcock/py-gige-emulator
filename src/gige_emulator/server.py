@@ -26,7 +26,8 @@ class GigECameraServer(object):
                  packet_size=c.DEFAULT_PACKET_SIZE,
                  heartbeat_timeout_ms=3000, validate=True,
                  compress_xml=True, packet_resend=True, resend_guard=None,
-                 retain_frames=None, link_utilisation=None):
+                 retain_frames=None, link_utilisation=None,
+                 allow_any_destination=False):
 
         if interface is not None:
             # The address has to be the interface's or the client cannot
@@ -102,7 +103,8 @@ class GigECameraServer(object):
                                     control=self.control, interface=interface,
                                     resend_guard=resend_guard,
                                     retain_frames=retain_frames,
-                                    link_utilisation=link_utilisation)
+                                    link_utilisation=link_utilisation,
+                                    allow_any_destination=allow_any_destination)
 
     def _on_test_packet(self, packet_size, do_not_fragment):
         # Bound late rather than passed as self.stream.send_test_packet,

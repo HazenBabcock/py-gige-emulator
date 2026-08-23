@@ -24,6 +24,21 @@ from .memory import MemoryError_
 log = logging.getLogger(__name__)
 
 
+def _claims_control(command):
+    """
+    True if this command is a write to the control channel privilege
+    register, the one write an uncontrolled device must accept.
+    """
+    if command.command == c.CMD_WRITE_REGISTER:
+        try:
+            pairs = gvcp.decode_write_register(command.payload)
+        except gvcp.MalformedPacket:
+            return False
+        return any(address == c.BS_CONTROL_CHANNEL_PRIVILEGE
+                   for address, _ in pairs)
+    return False
+
+
 class ControlChannel(object):
 
     def __init__(self, memory, lock, port=c.GVCP_PORT, bind_address="",
@@ -166,8 +181,19 @@ class ControlChannel(object):
         self._expire_controller()
 
         with self.lock:
-            write_access = (self.controller is None
-                            or self.controller == address)
+            # Holding control is what earns the right to write. The one
+            # exception is the privilege register itself, which is how
+            # control is claimed in the first place -- refusing that would
+            # leave no way in.
+            #
+            # This used to grant write access to anyone whenever the device
+            # was idle, which is looser than the standard and looser than it
+            # sounds: the address is a UDP source, so a few packets with a
+            # forged one could point the stream anywhere and start it, with
+            # no reply ever needed by whoever sent them.
+            write_access = (self.controller == address
+                            or (self.controller is None
+                                and _claims_control(command)))
             # Any command from the controller counts as a heartbeat, not just
             # a read of the privilege register.
             #

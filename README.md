@@ -388,6 +388,41 @@ device used to refuse anything over the smaller number — an open that failed
 with `Failed to read memory at 0x10000, 0x4e8 bytes` and looked like a
 corrupt XML. The limit is now what fits in one datagram.
 
+#### Exposure ####
+
+Running this puts a UDP listener on port 3956 of the host. **GigE Vision has
+no authentication**, by design and in every implementation: anyone who can
+reach that port can take control of the camera, change its settings and start
+a stream. That is the protocol rather than anything specific to this device,
+and a real camera behaves the same way — but a real camera sits on a camera
+network, while this runs on a general purpose machine with a real uplink,
+which makes it a much better amplifier if it is left somewhere it can be
+reached.
+
+Two defaults exist to keep it from being an easy one:
+
+* **The stream goes only to the client that asked for it.** The destination is
+  a register the client writes, so a device that honours it unconditionally
+  will send megabytes per second wherever it is told — and since the client's
+  address is a UDP source, a handful of forged packets naming a third party
+  would do it, with no reply ever going back to whoever sent them. Pass
+  `allow_any_destination=True` if handing the images to another machine is
+  what you actually want.
+* **Writing requires holding control**, with one exception: the write that
+  claims control. Accepting writes from anyone whenever the device happened to
+  be idle is looser than the standard, and it removed the need for an attacker
+  to complete any handshake at all.
+
+What remains is inherent to the protocol. Discovery answers whoever asks —
+eight bytes in, 256 back — so the device is a small reflector to anyone able
+to forge a source address, exactly as a real camera is. A client that does
+hold control can ask for a full rate stream at any time.
+
+So: give it `--interface` to pin it to one network, do not route it anywhere
+untrusted, and do not forward 3956 through anything. It listens on an
+unprivileged port and writes no files, so it never needs root — do not give it
+any.
+
 #### Tests ####
 
 ```

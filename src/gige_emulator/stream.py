@@ -92,7 +92,7 @@ class StreamChannel(object):
     def __init__(self, camera, memory, lock, device_ip,
                  control=None, idle_poll=0.02, interface=None,
                  resend_guard=None, retain_frames=None,
-                 link_utilisation=None):
+                 link_utilisation=None, allow_any_destination=False):
         self.camera = camera
         self.memory = memory
         self.lock = lock
@@ -114,8 +114,12 @@ class StreamChannel(object):
                                     if link_utilisation is None
                                     else link_utilisation))
 
-        #: (control ip, stream ip) the mismatch warning last fired for, so a
-        #: client that means it is told once rather than every frame.
+        #: Send the stream anywhere a client asks, rather than only back to
+        #: the client that asked. Off by default: see _destination_allowed().
+        self.allow_any_destination = allow_any_destination
+
+        #: (control ip, stream ip) the last message fired for, so a client is
+        #: told once rather than once per frame.
         self._warned_destination = None
 
         self.frame_id = 0
@@ -447,7 +451,8 @@ class StreamChannel(object):
             target = self._stream_target()
             if target is None:
                 return None
-            self._check_destination(target)
+            if not self._destination_allowed(target):
+                return None
             packet_size = (self.memory.peek_register(c.BS_SC0_PACKET_SIZE)
                            & c.SC_PACKET_SIZE_MASK)
             packet_delay = self.memory.peek_register(c.BS_SC0_PACKET_DELAY)
@@ -457,10 +462,17 @@ class StreamChannel(object):
             mode = self.camera.settings.get("AcquisitionMode", "Continuous")
             return target, packet_size, packet_delay, geometry, mode
 
-    def _check_destination(self, target):
+    def _destination_allowed(self, target):
         """
-        Say something when the client asks for the images at an address it is
-        not talking to us from.
+        Whether to send the images where the client asked.
+
+        Only back to the client that asked, unless the caller opted out with
+        allow_any_destination. Handing a stream to a third machine is a real
+        use, but the default has to be the safe one: GVCP carries no
+        authentication, the client's address is a UDP source that anybody can
+        forge, and a few small packets naming someone else would otherwise
+        turn this device into an amplifier pointed at them -- with no reply
+        ever going back to whoever sent them.
 
         Perfectly legal, and sometimes deliberate -- a client can hand the
         stream to another machine. But on a host with two interfaces on one
@@ -472,17 +484,30 @@ class StreamChannel(object):
         the whole question.
         """
         if self.control is None:
-            return
+            return True
         controller = self.control.controller
         if controller is None or controller[0] == target[0]:
-            return
-        if self._warned_destination == (controller[0], target[0]):
-            return
-        self._warned_destination = (controller[0], target[0])
-        log.warning("the client controlling this camera is at %s but asked "
-                    "for the stream at %s; if those are two interfaces on one "
-                    "machine, the images are taking a different path from the "
-                    "commands", controller[0], target[0])
+            return True
+
+        pair = (controller[0], target[0])
+        said = self._warned_destination == pair
+        self._warned_destination = pair
+        if self.allow_any_destination:
+            if not said:
+                log.warning("the client controlling this camera is at %s but "
+                            "asked for the stream at %s; sending it anyway "
+                            "because allow_any_destination is set. If those "
+                            "are two interfaces on one machine, the images "
+                            "are taking a different path from the commands",
+                            *pair)
+            return True
+        if not said:
+            log.warning("refusing to stream to %s: the client controlling "
+                        "this camera is at %s, and a device that sends where "
+                        "it is told is an amplifier for anyone who can forge "
+                        "a source address. Pass allow_any_destination=True if "
+                        "this is deliberate", target[0], controller[0])
+        return False
 
     def _run(self):
         while self.running:

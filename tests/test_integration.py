@@ -1047,22 +1047,23 @@ def test_stopping_during_a_long_exposure_does_not_kill_the_stream_thread():
 # --- images going somewhere the commands are not ------------------------
 
 
-def test_a_stream_pointed_at_another_address_is_called_out(client, server,
-                                                           caplog):
+def test_a_stream_pointed_at_another_address_is_refused(client, server,
+                                                        caplog):
     """
-    Legal, and occasionally deliberate. But two interfaces on one subnet make
-    it an easy accident, and an expensive one -- commands over the wire,
-    images over WiFi, presenting as damaged frames with nothing to say why.
-    Measured on the bench: pylon controlled the camera from 192.168.1.224 and
-    asked for the stream at 192.168.1.252, the same machine's wireless
-    address, and only a packet capture showed it.
+    GVCP carries no authentication and the client's address is a UDP source
+    anyone can forge, so a device that sends wherever it is told is an
+    amplifier: a few small packets naming a third party, with no reply ever
+    going back to whoever sent them, and the victim gets a stream.
+
+    Sending only to the client that asked costs nothing legitimate by
+    default. It is also the case that used to be merely warned about, when
+    pylon controlled a camera from one interface and asked for the images on
+    another.
     """
     client.take_control()
     client.open_stream()
     features = server.camera.feature_set.by_name
 
-    # Somewhere else on loopback. Nothing reads it, which is the point: this
-    # is what a client that named the wrong interface looks like.
     elsewhere = struct.unpack("!I", socket.inet_aton("127.0.0.2"))[0]
     client.write_register(c.BS_SC0_IP_ADDRESS, elsewhere)
 
@@ -1071,8 +1072,28 @@ def test_a_stream_pointed_at_another_address_is_called_out(client, server,
         time.sleep(0.3)
         client.write_register(features["AcquisitionStop"].address, 1)
 
-    assert "127.0.0.1" in caplog.text and "127.0.0.2" in caplog.text
-    assert "different path" in caplog.text
+    assert server.stream.n_frames == 0, "nothing should have been sent"
+    assert "refusing to stream to 127.0.0.2" in caplog.text
+
+
+def test_streaming_elsewhere_is_available_to_a_caller_who_means_it():
+    # Handing the images to another machine is a real thing to want; it just
+    # cannot be what happens by default.
+    camera = PatternCamera(width=8, height=8, pixel_format="Mono8")
+    srv = GigECameraServer(camera, ip="127.0.0.1", netmask="255.0.0.0",
+                           model_name="PatternCam", serial_number="TEST-1",
+                           gvcp_port=PORT + 6, bind_address="127.0.0.1",
+                           allow_any_destination=True)
+    guarded = GigECameraServer(PatternCamera(width=8, height=8,
+                                             pixel_format="Mono8"),
+                               ip="127.0.0.1", netmask="255.0.0.0",
+                               model_name="PatternCam", serial_number="TEST-1",
+                               gvcp_port=PORT + 7, bind_address="127.0.0.1")
+    for server, expected in ((srv, True), (guarded, False)):
+        server.control.controller = ("10.0.0.1", 5000)
+        assert server.stream._destination_allowed(("10.9.9.9", 6000)) is expected
+        # Back to the controller is always fine.
+        assert server.stream._destination_allowed(("10.0.0.1", 6000)) is True
 
 
 def test_a_stream_going_back_to_the_client_says_nothing(client, server,
@@ -1107,3 +1128,39 @@ def test_publishing_the_packet_size_did_not_move_it(client, server):
     # the feature's default over the top would quietly undo --packet-size.
     assert (server.memory.peek_register(c.BS_SC0_PACKET_SIZE)
             & c.SC_PACKET_SIZE_MASK) == c.DEFAULT_PACKET_SIZE
+
+
+# --- who is allowed to write --------------------------------------------
+
+
+def test_a_write_without_control_is_refused(server):
+    """
+    Writes used to be accepted from anyone whenever the device was idle,
+    which is looser than the standard and looser than it sounds: the address
+    is a UDP source, so a handful of forged packets could point the stream
+    somewhere and start it without ever needing a reply.
+    """
+    with FakeClient(("127.0.0.1", PORT)) as stranger:
+        features = server.camera.feature_set.by_name
+        with pytest.raises(FakeClientError) as caught:
+            stranger.write_register(features["ExposureTime"].address, 5000)
+        assert caught.value.error == c.ERROR_ACCESS_DENIED
+
+
+def test_claiming_control_is_the_one_write_that_needs_no_control(client,
+                                                                 server):
+    # Refusing this would leave no way in at all.
+    client.take_control()
+    assert server.control.has_control()
+
+
+def test_a_second_client_cannot_write_over_the_controller(client, server):
+    client.take_control()
+    features = server.camera.feature_set.by_name
+    with FakeClient(("127.0.0.1", PORT)) as stranger:
+        with pytest.raises(FakeClientError) as caught:
+            stranger.write_register(features["ExposureTime"].address, 5000)
+        assert caught.value.error == c.ERROR_ACCESS_DENIED
+        # And it cannot take control away either, while the first is alive.
+        with pytest.raises(FakeClientError):
+            stranger.take_control()
