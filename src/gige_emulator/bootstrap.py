@@ -10,7 +10,7 @@
 import logging
 import socket
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from . import constants as c
 
