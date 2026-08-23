@@ -6,28 +6,31 @@
 #
 #   python examples/pi_camera.py --interface eth0
 #
-# NOTE: this has to run on a Pi, so unlike the OpenCV example it has not been
-# exercised on the machine this was developed on. The frame handling is
-# ported from a working Aravis-based bridge; the parts that are new here are
-# the settings hooks.
+# This one needs a Pi, so it cannot be exercised on a development machine the
+# way the OpenCV example can. It is run against an IMX477 on real hardware
+# instead; the frame handling came from a working Aravis-based bridge, and the
+# settings hooks were written here.
 #
-# FULL RESOLUTION NEEDS A PACKET DELAY, or it fails completely rather than
-# degrading. A 4056x3040 frame is 37 MB as RGB8 and 24.7 MB as Bayer, or
-# 27,120 and 16,753 packets, and the emulator sends a frame as one
-# uninterrupted burst. Once that burst is larger than the client's socket
-# buffer it cannot drain fast enough, and with packet resend not advertised a
-# single lost packet costs the whole frame. Measured against Aravis with
-# rmem_max at 16.8 MB: every full resolution frame failed, while 2028x1520 at
-# 9.2 MB completed 126 of 126 with no missing packets at all.
+# FULL RESOLUTION WANTS A PACKET DELAY. A 4056x3040 frame is 37 MB as RGB8 and
+# 24.7 MB as Bayer, or 27,120 and 16,753 packets, and the emulator sends a
+# frame as one uninterrupted burst. Once that burst is larger than the
+# client's socket buffer the client cannot drain it fast enough and packets
+# are lost. Packet resend then repairs most of them, expensively. Measured
+# against Aravis with rmem_max at 16.8 MB, 20 s per row:
 #
-# Pacing the burst fixes it and needs no root on either side:
+#   2028x1520 RGB8,   9.2 MB   200 frames, 0 failures,   3,721 resend requests
+#   4056x3040 Bayer, 24.7 MB    81 frames, 7 failures, 343,271 resend requests
+#   4056x3040 RGB8,  37.0 MB    57 frames, 1 failure,  101,917 resend requests
+#
+# Pacing the burst avoids the loss instead of repairing it, and needs no root
+# on either side:
 #
 #   arv-camera-test-0.8 -n <name> -a -m 5000 -y 20000
 #
-# which took the same 37 MB frame from 0 completed to 25 completed with zero
-# missing packets, at about 1 fps -- the 20 us delay costs 0.54 s per frame,
-# so tune it down until frames start failing. Raising rmem_max past the frame
-# size works too, but 20 MB is not enough for a 12 MPix sensor.
+# which takes that same 37 MB frame to 29 frames with 0 failures, 0 missing
+# packets and no resend requests at all -- the 20 us delay costs 0.54 s per
+# frame, so tune it down until frames start failing. Raising rmem_max past the
+# frame size works too, but 20 MB is not enough for a 12 MPix sensor.
 #
 # Jumbo frames help by cutting the packet count, if every hop supports them:
 #
@@ -954,8 +957,10 @@ if __name__ == "__main__":
                              "otherwise identical cameras apart")
     parser.add_argument("--vendor", default="py-gige-emulator",
                         help="vendor name, the first part of the device id. "
-                             "A few real vendor names are refused because "
-                             "clients apply per-vendor workarounds to them")
+                             "A few real ones are warned about, because "
+                             "clients apply per-vendor workarounds keyed to "
+                             "them -- and because a client that checks the "
+                             "name usually wants a matching --mac too")
     parser.add_argument("--model", default="PiHQ",
                         help="model name. With the vendor and serial this "
                              "forms the device id a client lists, so two "

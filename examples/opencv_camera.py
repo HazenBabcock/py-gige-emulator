@@ -342,8 +342,10 @@ if __name__ == "__main__":
                              "otherwise identical cameras apart")
     parser.add_argument("--vendor", default="py-gige-emulator",
                         help="vendor name, the first part of the device id. "
-                             "A few real vendor names are refused because "
-                             "clients apply per-vendor workarounds to them")
+                             "A few real ones are warned about, because "
+                             "clients apply per-vendor workarounds keyed to "
+                             "them -- and because a client that checks the "
+                             "name usually wants a matching --mac too")
     parser.add_argument("--model", default="OpenCV",
                         help="model name. With the vendor and serial this "
                              "forms the device id a client lists, so two "
