@@ -193,7 +193,7 @@ def parse_mode(text, sensor_modes):
         width, height = (int(v) for v in size.lower().split("x"))
     except ValueError:
         raise ValueError("expected WIDTHxHEIGHT or WIDTHxHEIGHT/FORMAT, "
-                         "got %r" % text)
+                         "got %r" % text) from None
 
     matches = [m for m in sensor_modes if tuple(m["size"]) == (width, height)]
     if not matches:

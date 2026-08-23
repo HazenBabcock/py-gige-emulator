@@ -219,7 +219,7 @@ def test_the_measurement_follows_a_rate_that_changes(camera):
         camera._note_arrival(100.0 + i * 0.05)             # 20 fps
     fast = camera.measured_frame_rate()
     at = 100.0 + opencv_camera.OpenCvCamera.RATE_WINDOW * 0.05
-    for i in range(opencv_camera.OpenCvCamera.RATE_WINDOW):
+    for _ in range(opencv_camera.OpenCvCamera.RATE_WINDOW):
         at += 0.1                                          # 10 fps
         camera._note_arrival(at)
     assert fast == pytest.approx(20.0)

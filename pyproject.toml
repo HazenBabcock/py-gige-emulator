@@ -20,3 +20,30 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Correctness, not house style. F is pyflakes and B is bugbear -- rules that
+# find things which are wrong. The pycodestyle subsets are the ones about
+# syntax and logic rather than whitespace.
+#
+# Ruff's defaults also carry a lot of style opinion, which on this codebase
+# came to 218 findings against one real defect. Rather than switch rules off
+# one by one as they fire, the selection is narrow on purpose. What was read
+# through and deliberately left out:
+#
+#   UP031   percent formatting, 159 of them. Used consistently, and correct
+#           where it appears in logging calls, which defer their formatting.
+#   UP004   class Foo(object). Consistent throughout.
+#   BLE001  blind except, four of them. Each catches third-party camera code
+#           -- a user's hook, pypylon, picamera2 -- and turns it into an
+#           error ack, so the client is told why instead of timing out.
+#   RUF059  unused unpacked variables, all in tests. Naming every field of a
+#           struct.unpack documents the packet layout even where only one is
+#           read; "_" would lose that.
+#   RUF012  a class level lookup table that is never mutated.
+#   I001    import order.
+#   SIM102, SIM117, RUF015, PIE810, FURB188, PLR0402, UP041: readability
+#           preferences with no behavioural difference.
+#
+# Add a rule here when it would catch a bug, not when it would tidy one.
+select = ["E4", "E7", "E9", "F", "B"]

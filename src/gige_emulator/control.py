@@ -274,7 +274,7 @@ class ControlChannel(object):
                 for addr, value in pairs:
                     self.memory.write_register(addr, value)
             if self.bridge is not None:
-                for addr, value in pairs:
+                for addr, _ in pairs:
                     self.bridge.after_write(addr)
             for addr, value in pairs:
                 if (addr == c.BS_SC0_PACKET_SIZE

@@ -112,7 +112,7 @@ class FeatureBridge(object):
             value = feature.validate(value)
         except Exception as e:
             self._restore(feature)
-            raise MemoryError_(str(e), c.ERROR_INVALID_PARAMETER)
+            raise MemoryError_(str(e), c.ERROR_INVALID_PARAMETER) from e
 
         previous = self.camera.settings.get(feature.name)
         if value == previous:
@@ -125,7 +125,8 @@ class FeatureBridge(object):
             self.camera.settings[feature.name] = previous
             self._restore(feature)
             raise MemoryError_("%s rejected by the camera: %s"
-                               % (feature.name, e), c.ERROR_INVALID_PARAMETER)
+                               % (feature.name, e),
+                               c.ERROR_INVALID_PARAMETER) from e
 
         # A geometry change may have moved Width and Height too -- binning is
         # the usual case -- so re-publish everything derived from it rather
