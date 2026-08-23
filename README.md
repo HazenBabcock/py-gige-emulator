@@ -18,7 +18,9 @@ class MyCamera(EmulatedCamera):
 
     # Width, Height, PixelFormat, PayloadSize, SensorWidth, SensorHeight,
     # AcquisitionMode, AcquisitionStart/Stop and AcquisitionFrameRate are
-    # provided. Declare anything else you want the client to see.
+    # provided, as are the stream channel's own GevSCPSPacketSize and GevSCPD.
+    # Pass roi=True for a writable Width and Height plus OffsetX and OffsetY.
+    # Declare anything else you want the client to see.
     # The category is where a client's feature tree files this, and it is
     # worth getting right: exposure is a time and gain is an amplitude, so
     # they belong in different ones however often they are tuned together.
@@ -191,11 +193,12 @@ will reconstruct.
   cannot drift — an `<Address>` that disagrees with what the device stores
   fails in a way that looks like a client bug.
 * **The XML is served zipped**, as real cameras do, and the URL's `.xml.zip`
-  filename is what tells the client to inflate it. Clients read the blob in
-  fixed 512 byte chunks — Aravis hardcodes that — so the download costs one
-  round trip per 512 bytes no matter how fast the link is, and a typical
-  feature set is 8 kB of XML that deflates to under 1.5 kB. That is 16 round
-  trips against 3, out of about 28 for the whole open. Invisible on a fast
+  filename is what tells the client to inflate it. The download costs round
+  trips rather than bandwidth, and how many depends on the client: Aravis
+  hardcodes 512 byte reads, pylon asks for 1256, and this device answers up to
+  1460 — what fits in one datagram. A typical feature set is 8 kB of XML that
+  deflates to under 1.5 kB, so at Aravis's chunk size that is 16 round trips
+  against 3, out of about 28 for the whole open. Invisible on a fast
   link and most of the wait on a slow one. Pass `compress_xml=False` if you
   meet a client that cannot inflate; the device also falls back on its own if
   the archive would not be smaller, because a client decides an entry is
@@ -249,8 +252,16 @@ will reconstruct.
 
 #### Dropped packets ####
 
-Packet resend is deliberately not advertised, so a lost packet costs a whole
-frame. If you see failures, raise the receive buffer on the client machine:
+Packet resend is implemented and advertised, so a lost packet need not cost
+the frame: the client notices the gap, asks for the missing range, and the
+device serves it from the handful of frames it keeps for the purpose.
+Measured on the bench at 1332x990 RGB8 and 25 fps, close to line rate, Aravis
+made 170 resend requests across 300 frames and recovered every one — 0 missing
+packets, 0 failed buffers.
+
+Resend only helps a client that asks, and it cannot rescue packets that never
+reached the socket. If you see failures, raise the receive buffer on the
+client machine:
 
 ```
 $ sudo sysctl -w net.core.rmem_max=20000000
@@ -260,9 +271,10 @@ $ sudo sysctl -w net.core.rmem_default=20000000
 **A frame that does not fit in the client's socket buffer will fail every
 time.** A frame goes out as one uninterrupted burst, so the client has to
 drain it as it arrives; once the burst is larger than the buffer, any
-scheduling hiccup loses packets, and with no resend a single lost packet costs
-the frame. The cutoff is sharp rather than gradual. Measured against an
-IMX477 with `rmem_max` at 16.8 MB:
+scheduling hiccup loses packets — and the resends land in the same overrun
+buffer, so asking again does not help. The cutoff is sharp rather than
+gradual. Measured against an IMX477 with `rmem_max` at 16.8 MB, **before
+resend existed**, so the failures below are what a lost packet cost then:
 
 | frame | packets | result |
 |---|---|---|
@@ -424,5 +436,5 @@ the emulator, because a vendor viewer cannot tell you whether its producer
 never looked, looked and rejected the device, or found it and filtered it at
 the application layer — and all three happen.
 
-Not implemented: packet resend, multipart payloads, chunk data, message
-channels, extended (64 bit) frame ids, and more than one stream channel.
+Not implemented: multipart payloads, chunk data, message channels, extended
+(64 bit) frame ids, and more than one stream channel.
