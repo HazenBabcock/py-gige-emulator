@@ -58,6 +58,7 @@ $ python examples/opencv_camera.py --interface eth0     # any cv2.VideoCapture c
 $ python examples/pi_camera.py     --interface eth0     # Raspberry Pi HQ camera
 $ python examples/basler_camera.py --interface eth0     # Basler USB camera, via pypylon
 $ python examples/allied_vision_camera.py --interface eth0   # Alvium USB, via vmbpy
+$ python examples/flir_camera.py   --interface eth0     # FLIR Blackfly S, via PySpin
 ```
 
 then point any GigE Vision client at it. They all take `--interface` to pick
@@ -360,6 +361,7 @@ control, and again with a matching MAC but the emulator's own vendor name:
 | ImpactAcquire (Balluff) | yes | nothing |
 | VimbaX (Allied Vision) | no | one of exactly two OUIs, `00:0a:47` or `00:0f:31` |
 | pylon (Basler) | no | a Basler OUI, `00:30:53`, **and** the vendor name `Basler` |
+| Spinnaker (Teledyne FLIR) | no | one of five OUIs, listed below; the name is not checked |
 
 Model and serial are free in both cases. Vendor names that are known to
 change client behaviour are logged as a warning rather than refused, because
@@ -374,7 +376,17 @@ Vision's newer blocks are not accepted by this build, and neither is anyone
 else's. The vendors also check separately, not against some shared list of
 camera makers: with Basler's `00:30:53`, VimbaX reports zero devices.
 
-Both OUIs above come from the IEEE MA-L registry, which is public — on
+Spinnaker takes five, tested against every FLIR, Point Grey and Teledyne
+block in the registry. It accepts Teledyne DALSA's `00:01:0d`, FLIR Systems'
+`00:1b:d8` and `00:40:7f`, and Point Grey's `00:b0:9d` and `2c:dd:a3`. It
+refuses Teledyne DALSA Professional Imaging's `dc:60:a1`, Teledyne
+Technologies' `00:17:8b`, Teledyne LeCroy's `00:10:4c` and FLIR Radiation's
+`00:13:56` — so this is a list of particular blocks rather than anything to
+do with who owns them. Unlike pylon, it never looks at the vendor name: the
+emulator is admitted calling itself `py-gige-emulator`, and refused calling
+itself `FLIR` from the wrong MAC.
+
+Every OUI above comes from the IEEE MA-L registry, which is public — on
 Debian, `/usr/share/ieee-data/oui.txt`.
 
 Two things worth being clear about. An OUI is assigned by the IEEE to a real
