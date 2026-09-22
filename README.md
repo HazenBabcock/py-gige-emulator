@@ -255,45 +255,45 @@ will reconstruct.
 Packet resend is implemented and advertised, so a lost packet need not cost
 the frame: the client notices the gap, asks for the missing range, and the
 device serves it from the handful of frames it keeps for the purpose.
-Measured on the bench at 1332x990 RGB8 and 25 fps, close to line rate, Aravis
-made 170 resend requests across 300 frames and recovered every one — 0 missing
-packets, 0 failed buffers.
 
-Resend only helps a client that asks, and it cannot rescue packets that never
-reached the socket. If you see failures, raise the receive buffer on the
-client machine:
+Most of what this section used to report was the device's own doing. The
+stream socket asked for an 8 MB send buffer, which at gigabit is 65 ms of
+video queued inside the sender -- deep enough to overrun the host's own
+transmit scheduling, and deep enough that a resend left the machine long
+after the client had given up on the frame it was meant to repair. That
+buffer is now 256 KB (`SEND_BUFFER_SIZE` in `stream.py`). Measured against an
+IMX477, Aravis with `-a`, 20 s per row, the client's `rmem_max` at 16.8 MB:
+
+| frame | packets | completed | failed | missing packets | resend requests |
+|---|---|---|---|---|---|
+| 2028x1520 RGB8, 9.2 MB | 6,282 | 200 | 0 | 0 | 0 |
+| 4056x3040 BayerBG16, 24.6 MB | 16,753 | 78 | 0 | 0 | 0 |
+| 4056x3040 RGB8, 37.0 MB | 27,120 | 50 | 0 | 0 | 0 |
+
+Every one of those rows used to lose packets, the bottom two badly: 63,741
+and 27,121 missing, and 343,271 resend requests behind the middle row alone.
+
+So the advice this section used to give -- raise the client's receive buffer
+past the frame size, or pace the burst with the packet delay -- is no longer
+the first thing to reach for. A 37 MB frame is more than twice the receive
+buffer above and arrives whole. The packet delay still works and still costs
+what it did: the same row with 20 us between packets
+(`arv-camera-test -a -m 5000 -y 20000`) falls from 50 frames to 19, now for
+nothing that needed fixing. Both remain worth trying on a link that really
+does lose packets, since resend cannot rescue what never reached the socket:
 
 ```
 $ sudo sysctl -w net.core.rmem_max=20000000
 $ sudo sysctl -w net.core.rmem_default=20000000
 ```
 
-**A frame larger than the client's socket buffer loses packets**, and resend
-is the whole of what stands between that and a lost frame. A frame goes out as
-one uninterrupted burst, so the client has to drain it as it arrives; once the
-burst is bigger than the buffer, any scheduling hiccup drops packets. Measured
-against an IMX477 with `rmem_max` at 16.8 MB, 20 s per row:
-
-| frame | packets | completed | failed | missing packets | resend requests |
-|---|---|---|---|---|---|
-| 2028x1520 RGB8, 9.2 MB | 6,282 | 200 | **0** | 0 | 3,721 |
-| 4056x3040 BayerBG16, 24.7 MB | 16,753 | 81 | 7 | 63,741 | 343,271 |
-| 4056x3040 RGB8, 37.0 MB | 27,120 | 57 | 1 | 27,121 | 101,917 |
-
-Before resend existed the bottom two rows completed **no frames at all**, 50
-and 54 failures, and this section said the cutoff was sharp. It is not any
-more: most frames now arrive, bought with a great deal of resend traffic and
-roughly half the frames skipped outright. Note the top row is clean only
-because resend made it so — 3,721 requests behind those zeros.
-
-Two ways out, and the second needs no root. Raise `rmem_max` past the frame
-size — 20 MB is not enough for a full frame from a 12 MPix sensor, so size it
-from your payload. Or set the packet delay, which paces the burst so the
-client can keep up: the same 37 MB frame goes to **29 frames, 0 failures, 0
-missing packets and no resend requests at all** with 20 µs between packets
-(`arv-camera-test -a -m 5000 -y 20000`). That costs 0.54 s of pacing per
-frame, so it buys correctness with frame rate — worth tuning down until it
-starts failing.
+**A client that completes every frame is not evidence the device is
+behaving.** Aravis repairs quietly and reports success: on the old 8 MB
+buffer the 37 MB row still completed every frame, with 542 resend requests
+behind it. VimbaX gives up on a frame sooner, and on a second bench that same
+buffer cost it three quarters of its frames -- while Aravis, on that bench and
+that buffer, still reported no failures at all. Read the resend counts in
+`server.stats` alongside the failures.
 
 Jumbo frames help by cutting the packet count, if every hop supports them and
 `GevSCPSPacketSize` matches.

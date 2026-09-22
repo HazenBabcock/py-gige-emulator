@@ -105,9 +105,12 @@ def init_bootstrap(memory, info, xml_size):
     # so with it off no amount of device-side support is ever exercised.
     #
     # It matters most exactly where it is least optional. A full resolution
-    # frame is 16,984 packets; at a measured 0.03% loss essentially every
-    # frame arrives with a hole, and without resend a single hole discards
-    # all 24.7 MB of it.
+    # frame is 16,984 packets, so even a link losing 0.03% of them puts a
+    # hole in nearly every frame, and without resend a single hole discards
+    # all 24.7 MB of it. (The 0.03% this used to cite was measured when the
+    # device was overrunning its own send queue -- see SEND_BUFFER_SIZE in
+    # stream.py -- and that bench now loses nothing. Links that do lose
+    # packets are what this is for.)
     capability = c.GVCP_CAPABILITY_PACKET_RESEND if info.packet_resend else 0
     memory.poke_register(c.BS_GVCP_CAPABILITY, capability)
 

@@ -32,7 +32,32 @@ from .camera import Frame
 
 log = logging.getLogger(__name__)
 
-SEND_BUFFER_SIZE = 8 * 1024 * 1024
+# Bytes the kernel may hold for the stream socket.
+#
+# Deliberately small. This buffer is a queue in front of the wire, and
+# everything in it is video a client is already waiting for. It was 8 MB
+# here, which at gigabit is 65 ms of frame sitting in the sender before it
+# is sent -- and a resend queues behind all of it, arriving long after the
+# client gave up on the frame it was meant to repair. Worse, a queue that
+# deep makes the device its own source of loss: it overruns whatever the
+# machine uses to schedule its transmissions.
+#
+# Measured on two benches (a Pi 5 and an x86 NUC, both streaming full frames
+# at wire rate to VimbaX's GigE producer), 8 MB against 256 KB:
+#
+#   queue actually held    5.5 MB median, 8.2 MB peak   ->  0.36 MB, 0.51 MB
+#   frames arriving whole  Pi 35/40, NUC 9/40           ->  Pi 40/40, NUC 397/400
+#   packets resent         up to 10,700 per 15 s        ->  0 to 400
+#
+# The cost is about 3% of the frame rate, from the wire going briefly idle
+# while Python refills a shallower buffer. Aravis hides the old behaviour
+# almost entirely -- it repairs everything and reports no failures, at the
+# price of that resend traffic -- so a client that completes every frame is
+# not on its own evidence that the device is behaving.
+#
+# The kernel doubles this for its own bookkeeping and caps it at
+# net.core.wmem_max, so what a host grants is not what is asked for here.
+SEND_BUFFER_SIZE = 256 * 1024
 
 # How long stop() waits for the stream thread. Not sized to cover an exposure
 # on purpose -- see stop().
@@ -59,13 +84,13 @@ class StreamChannel(object):
     #: Two, so that sending frame N+1 does not end N's availability. Holding
     #: only the current frame forces the sender to sit idle after each one
     #: instead, waiting to see whether a request arrives, and that wait is
-    #: not small: Aravis arms a missing packet after 1 ms, but at 88,000
-    #: packets/s its own receive backlog delays the request far past that.
-    #: Measured at full resolution, a 5 ms wait left 510 requests arriving
-    #: too late while 250 ms left none -- and 250 ms of dead time per frame
-    #: halves the frame rate. Overlapping instead costs one buffer and no
-    #: time at all: N stays answerable for exactly as long as N+1 takes to
-    #: send, which is the same window the wait was buying.
+    #: not small: measured at full resolution, a 5 ms wait left 510 requests
+    #: arriving too late while 250 ms left none -- and 250 ms of dead time
+    #: per frame halves the frame rate. That was measured when SEND_BUFFER_SIZE
+    #: was 8 MB, and the lateness blamed on the client's backlog was mostly
+    #: this device's own send queue, so the numbers overstate it. The overlap
+    #: is kept because it costs one buffer and no time at all: N stays
+    #: answerable for exactly as long as N+1 takes to send.
     RETAIN_FRAMES = 2
 
     #: Extra dwell after a frame before fetching the next, on top of the
@@ -76,12 +101,19 @@ class StreamChannel(object):
 
     #: Share of the link the stream is allowed to occupy.
     #:
-    #: Not throttling for its own sake -- the remainder is what resends are
-    #: sent in. Sending flat out leaves none, so a lost run can only be
-    #: repaired by taking bandwidth from the next frame, which then loses a
-    #: run of its own. Measured at full resolution the stream saturates the
-    #: wire exactly (123 MB/s of a 123 MB/s link), so without a reservation
-    #: the first burst of loss is unrecoverable.
+    #: Not throttling for its own sake -- the remainder is the quiet the
+    #: repairs go out in, and what it really buys is *time*: a client closes
+    #: a frame shortly after the next one starts arriving, so a resent
+    #: packet is only useful if it lands before then.
+    #:
+    #: Measured 2026-09-22 against VimbaX, full frames from a 12 MPix camera
+    #: over a link that loses a little, 400 frames per setting: 0.85 left
+    #: 397 whole, 0.95 left 386 (Fisher p=0.012). Both lost and repaired the
+    #: same amount -- the difference is only whether the repair arrived in
+    #: time, 18 ms of quiet after a 105 ms frame against 5 ms. 0.95 is 6 to
+    #: 12% faster, which is not worth four times the lost frames. On a link
+    #: that loses nothing the reservation buys nothing either, so this costs
+    #: throughput there and protects nothing; it is the lossy link it is for.
     #:
     #: Applied against the time the frame itself took, so it needs no idea
     #: of the link's speed and follows it if it changes: a frame that took
@@ -383,8 +415,11 @@ class StreamChannel(object):
         Stay quiet for long enough to leave the link its reserved share.
 
         The frame's own send time is the measurement: with a blocking socket
-        it is how long the wire took, so the pause needs no configured link
-        speed and tracks one that changes. This is the window resends are
+        and a send buffer small enough not to hide the wire behind it -- see
+        SEND_BUFFER_SIZE -- it is how long the wire took, so the pause needs
+        no configured link speed and tracks one that changes. Enlarge that
+        buffer and this measures how fast the kernel accepted the frame
+        instead, and the pause is spent draining what is still queued. This is the window resends are
         answered in -- the control thread runs throughout, and the stream is
         not competing with it for the wire.
         """
