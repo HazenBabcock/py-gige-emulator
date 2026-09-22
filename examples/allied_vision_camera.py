@@ -169,12 +169,29 @@ class AlliedVisionCamera(EmulatedCamera):
                                                      sensor_height),
                          **kwds)
 
-        rate = self.feature_set.by_name["AcquisitionFrameRate"]
+        features = self.feature_set.by_name
+        rate = features["AcquisitionFrameRate"]
         rate.p_max = "AcquisitionFrameRateMax"
         rate.invalidated_by = ("ExposureTime", "Width", "Height",
                                "BinningHorizontal", "BinningVertical",
                                "PixelFormat")
         self._refresh_frame_rate_ceiling()
+
+        # Binning moves the geometry: the window is in binned pixels, so the
+        # camera resizes it and the payload with it. A GenICam client caches
+        # what it has read, so without these it goes on believing the width
+        # it saw before and sizes its buffers from it.
+        binning = ("BinningHorizontal", "BinningVertical")
+        for name in ("Width", "Height", "OffsetX", "OffsetY", "PayloadSize"):
+            features[name].invalidated_by = (
+                tuple(features[name].invalidated_by) + binning)
+
+        # And the axes move each other, one way: vertical binning above 1
+        # forces horizontal to 2, which the camera does by itself. The
+        # reverse does not happen, so only this direction is declared -- a
+        # pair that invalidate each other is a cycle, and GenApi
+        # implementations are not obliged to enjoy it.
+        features["BinningHorizontal"].invalidated_by = ("BinningVertical",)
 
     # --- talking to vmbpy ------------------------------------------------
 
@@ -381,7 +398,16 @@ class AlliedVisionCamera(EmulatedCamera):
         for name in ("BinningHorizontal", "BinningVertical"):
             if name in changed:
                 self._pause_streaming()
-                self._feature(name).set(self._clamp(name, changed[name]))
+                # Not clamped, unlike the continuous settings above. Binning
+                # is a choice, not a magnitude, so the nearest legal value is
+                # a different setting rather than a rounded one -- and this
+                # camera moves the bound: BinningHorizontal will not go below
+                # 2 while BinningVertical is above 1. A client returning to
+                # 1x1 writes horizontal first, which was clamped back to 2
+                # and reported as success, leaving the camera at 2x1 with
+                # nothing saying so. Letting the camera's refusal through
+                # reaches the client as an error on the write it got wrong.
+                self._feature(name).set(changed[name])
                 # Binning resizes the ROI under us, and the client sizes its
                 # buffers from Width and Height.
                 self._publish_geometry()

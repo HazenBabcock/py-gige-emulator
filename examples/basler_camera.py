@@ -143,12 +143,22 @@ class BaslerCamera(EmulatedCamera):
         # The ceiling moves with the ROI, the format, binning and the
         # exposure, so the frame rate's own max is a pointer to a feature
         # this class maintains rather than a number fixed at startup.
-        rate = self.feature_set.by_name["AcquisitionFrameRate"]
+        features = self.feature_set.by_name
+        rate = features["AcquisitionFrameRate"]
         rate.p_max = "AcquisitionFrameRateMax"
         rate.invalidated_by = ("ExposureTime", "Width", "Height",
                                "BinningHorizontal", "BinningVertical",
                                "PixelFormat")
         self._refresh_frame_rate_ceiling()
+
+        # Binning moves the geometry: the window is in binned pixels, so the
+        # camera resizes it and the payload with it. A GenICam client caches
+        # what it has read, so without these it goes on believing the width
+        # it saw before and sizes its buffers from it.
+        binning = ("BinningHorizontal", "BinningVertical")
+        for name in ("Width", "Height", "OffsetX", "OffsetY", "PayloadSize"):
+            features[name].invalidated_by = (
+                tuple(features[name].invalidated_by) + binning)
 
     def _reset_geometry(self):
         """
@@ -361,7 +371,14 @@ class BaslerCamera(EmulatedCamera):
             if name in changed:
                 self._pause_grabbing()
                 node = getattr(self.cam, name)
-                node.Value = self._clamp(node, changed[name])
+                # Not clamped, unlike the continuous settings. Binning is a
+                # choice rather than a magnitude, so the nearest legal value
+                # is a different setting, and a camera whose axes constrain
+                # each other -- the Alvium will not take horizontal 1 while
+                # vertical is 2 -- would otherwise answer a client's 1x1 with
+                # a silent 2x1 and call it success. The camera's refusal
+                # reaches the client as an error on the write it got wrong.
+                node.Value = changed[name]
                 # Binning changes what the sensor's full width means, and the
                 # camera resizes the ROI under us to suit. Republishing is
                 # not optional: the client sizes its buffers from Width and
