@@ -37,12 +37,21 @@ class NoiseCamera(EmulatedCamera):
         # provide its own timing. The stream thread sends frames exactly as
         # fast as next_frame() returns them, and without this it would
         # saturate a core and flood the network.
+        #
+        # A frame takes at least its exposure, so the frame rate is only a
+        # ceiling and the longer of the two intervals wins. Pacing on the
+        # rate alone left exposure doing nothing, and a client cannot
+        # compensate: the usual way to let exposure set the pace is to clear
+        # AcquisitionFrameRateEnable, which this camera does not have.
+        interval = (self.settings.get("ExposureTime") or 0.0) * 1e-6
         rate = self.settings.get("AcquisitionFrameRate", 0.0)
         if rate and rate > 0:
+            interval = max(interval, 1.0 / rate)
+        if interval > 0:
             now = time.monotonic()
             if self._next_due <= 0.0:
                 self._next_due = now
-            self._next_due = max(self._next_due + 1.0 / rate, now)
+            self._next_due = max(self._next_due + interval, now)
             time.sleep(max(0.0, self._next_due - now))
 
         size = self.geometry["payload"]
