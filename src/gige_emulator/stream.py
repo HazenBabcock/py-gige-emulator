@@ -497,9 +497,39 @@ class StreamChannel(object):
             mode = self.camera.settings.get("AcquisitionMode", "Continuous")
             return target, packet_size, packet_delay, geometry, mode
 
+    def refuse_destination(self, ip):
+        """
+        Why the stream may not be sent to `ip`, or None if it may.
+
+        The control channel asks this before applying the write that names
+        the destination, so the client is told there and then -- an error it
+        raises at once, rather than a stream that never starts. The policy
+        lives here because the stream channel is what would do the sending;
+        see _destination_allowed() for what it is protecting against.
+        """
+        if self.control is None or self.allow_any_destination:
+            return None
+        controller = self.control.controller
+        if controller is None or controller[0] == ip:
+            return None
+        return ("refusing to stream to %s: the client controlling this "
+                "camera is at %s. A device that sends where it is told is an "
+                "amplifier for anyone who can forge a source address, so this "
+                "one only answers the client that asked. Two interfaces on "
+                "one machine is the usual innocent cause -- and worth "
+                "knowing about either way, since it means the commands and "
+                "the images take different paths, which is how a camera on a "
+                "wire ends up delivering over WiFi. Pass "
+                "allow_any_destination=True, or --any-destination to the "
+                "examples, if this is deliberate" % (ip, controller[0]))
+
     def _destination_allowed(self, target):
         """
         Whether to send the images where the client asked.
+
+        A backstop. The control channel refuses the write that sets an
+        address this would reject, so reaching here means the situation
+        changed afterwards -- control taken by someone else, most likely.
 
         Only back to the client that asked, unless the caller opted out with
         allow_any_destination. Handing a stream to a third machine is a real

@@ -98,7 +98,8 @@ class GigECameraServer(object):
             self.memory, self.lock, port=gvcp_port, bind_address=bind_address,
             bridge=self.bridge, on_control_change=self._on_control_change,
             interface=interface, on_test_packet=self._on_test_packet,
-            on_packet_resend=self._on_packet_resend)
+            on_packet_resend=self._on_packet_resend,
+            on_destination_check=self._on_destination_check)
         self.stream = StreamChannel(camera, self.memory, self.lock, ip,
                                     control=self.control, interface=interface,
                                     resend_guard=resend_guard,
@@ -111,6 +112,11 @@ class GigECameraServer(object):
         # because the control channel is built before the stream channel
         # exists.
         self.stream.send_test_packet(packet_size, do_not_fragment)
+
+    def _on_destination_check(self, ip):
+        # Bound late, like the two below: the control channel is built before
+        # the stream channel whose policy this is.
+        return self.stream.refuse_destination(ip)
 
     def _on_packet_resend(self, frame_id, first_id, last_id):
         # Bound late, like _on_test_packet: the control channel is built

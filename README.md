@@ -405,9 +405,21 @@ Two defaults exist to keep it from being an easy one:
   a register the client writes, so a device that honours it unconditionally
   will send megabytes per second wherever it is told — and since the client's
   address is a UDP source, a handful of forged packets naming a third party
-  would do it, with no reply ever going back to whoever sent them. Pass
-  `allow_any_destination=True` if handing the images to another machine is
-  what you actually want.
+  would do it, with no reply ever going back to whoever sent them. The write
+  that names another address is **refused, with an error the client reports**,
+  rather than accepted and then ignored when the stream starts: a client told
+  nothing simply waits out its grab timeout with no frames and no reason.
+  Pass `allow_any_destination=True`, or `--any-destination` to any of the
+  examples, if handing the images to another machine is what you want.
+
+  This also catches something worth knowing about even when it is harmless. A
+  client on a host with two interfaces on one network may control the camera
+  over one and ask for the images on the other — pylon does exactly this here,
+  controlling over the wire and asking for the stream at its own WiFi address.
+  It works, in the sense that images arrive, but the commands and the images
+  are then taking different paths, and a camera on a wire ends up delivering
+  over WiFi. The refusal says so; `--any-destination` accepts it deliberately,
+  and taking the second interface down avoids it.
 * **Writing requires holding control**, with one exception: the write that
   claims control. Accepting writes from anyone whenever the device happened to
   be idle is looser than the standard, and it removed the need for an attacker

@@ -1059,13 +1059,52 @@ def test_a_stream_pointed_at_another_address_is_refused(client, server,
     default. It is also the case that used to be merely warned about, when
     pylon controlled a camera from one interface and asked for the images on
     another.
+
+    Refused at the write that names the address, not at the stream: that is
+    the moment the client is listening. pylon sets a destination it cannot
+    have, is told nothing, and then waits out its grab timeout with no
+    frames and no reason.
     """
+    client.take_control()
+    client.open_stream()
+
+    elsewhere = struct.unpack("!I", socket.inet_aton("127.0.0.2"))[0]
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(FakeClientError) as refused:
+            client.write_register(c.BS_SC0_IP_ADDRESS, elsewhere)
+
+    # Invalid parameter, not access denied: the register is writable, the
+    # value is not. A denial reads as "take control and try again".
+    assert "error 0x%02x" % c.ERROR_INVALID_PARAMETER in str(refused.value)
+    assert "refusing to stream to 127.0.0.2" in caplog.text
+    assert server.memory.peek_register(c.BS_SC0_IP_ADDRESS) != elsewhere, \
+        "a refused write must leave the register alone"
+
+
+def test_a_destination_reached_by_block_write_is_refused_too(client, server):
+    # The same register, through WRITEMEM rather than WRITEREG. A check on
+    # one path only would be one memcpy from useless.
+    client.take_control()
+    client.open_stream()
+
+    elsewhere = socket.inet_aton("127.0.0.2")
+    with pytest.raises(FakeClientError) as refused:
+        client.write_memory(c.BS_SC0_IP_ADDRESS, elsewhere)
+    assert "error 0x%02x" % c.ERROR_INVALID_PARAMETER in str(refused.value)
+    assert server.memory.peek_register(c.BS_SC0_IP_ADDRESS) != \
+        struct.unpack("!I", elsewhere)[0]
+
+
+def test_the_stream_still_checks_its_destination(client, server, caplog):
+    # The control channel refuses the write, so the stream's own check only
+    # fires when the situation changed after it -- control taken by someone
+    # else, say. Poking the register directly is how that is reached here.
     client.take_control()
     client.open_stream()
     features = server.camera.feature_set.by_name
 
     elsewhere = struct.unpack("!I", socket.inet_aton("127.0.0.2"))[0]
-    client.write_register(c.BS_SC0_IP_ADDRESS, elsewhere)
+    server.memory.poke_register(c.BS_SC0_IP_ADDRESS, elsewhere)
 
     with caplog.at_level(logging.WARNING, logger="gige_emulator.stream"):
         client.write_register(features["AcquisitionStart"].address, 1)

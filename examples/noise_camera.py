@@ -109,6 +109,18 @@ if __name__ == "__main__":
                              "counts, so raise this only for a client that "
                              "goes quiet for a long time, not merely a slow "
                              "one")
+    parser.add_argument("--any-destination", action="store_true",
+                        help="stream to whatever address the client asks "
+                             "for, rather than only back to the client "
+                             "holding control. Off by default: a device that "
+                             "sends where it is told is an amplifier for "
+                             "anyone who can forge a source address. Turn it "
+                             "on to hand the images to another machine -- or "
+                             "for a client on a host with two interfaces on "
+                             "one network, which asks for the images on the "
+                             "other one and is refused. That refusal is worth "
+                             "reading before switching it off: it means the "
+                             "commands and the images take different paths")
     parser.add_argument("--packet-size", type=int, default=1400)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -141,7 +153,8 @@ if __name__ == "__main__":
                                   serial_number=args.serial,
                                   user_defined_name=args.name,
                                   packet_size=args.packet_size,
-                              heartbeat_timeout_ms=args.heartbeat_timeout)
+                                  heartbeat_timeout_ms=args.heartbeat_timeout,
+                                  allow_any_destination=args.any_destination)
     except ValueError as e:
         parser.error(str(e))
     print("ctrl-c to exit.")

@@ -459,6 +459,18 @@ if __name__ == "__main__":
                              "silently")
     parser.add_argument("--list", action="store_true",
                         help="print the attached cameras, then exit")
+    parser.add_argument("--any-destination", action="store_true",
+                        help="stream to whatever address the client asks "
+                             "for, rather than only back to the client "
+                             "holding control. Off by default: a device that "
+                             "sends where it is told is an amplifier for "
+                             "anyone who can forge a source address. Turn it "
+                             "on to hand the images to another machine -- or "
+                             "for a client on a host with two interfaces on "
+                             "one network, which asks for the images on the "
+                             "other one and is refused. That refusal is worth "
+                             "reading before switching it off: it means the "
+                             "commands and the images take different paths")
     parser.add_argument("--packet-size", type=int, default=1400)
     parser.add_argument("--heartbeat-timeout", type=int, default=3000,
                         metavar="MS")
@@ -507,7 +519,8 @@ if __name__ == "__main__":
                               serial_number=camera.serial_number,
                               user_defined_name=args.name,
                               packet_size=args.packet_size,
-                              heartbeat_timeout_ms=args.heartbeat_timeout)
+                              heartbeat_timeout_ms=args.heartbeat_timeout,
+                              allow_any_destination=args.any_destination)
     print("serving %s %s (%s) at %dx%d %s, ctrl-c to exit."
           % (camera.vendor_name, camera.model_name, camera.serial_number,
              camera.settings["Width"], camera.settings["Height"],

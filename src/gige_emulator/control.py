@@ -12,6 +12,7 @@
 
 import logging
 import socket
+import struct
 import threading
 import time
 
@@ -43,7 +44,8 @@ class ControlChannel(object):
 
     def __init__(self, memory, lock, port=c.GVCP_PORT, bind_address="",
                  on_control_change=None, bridge=None, interface=None,
-                 on_test_packet=None, on_packet_resend=None):
+                 on_test_packet=None, on_packet_resend=None,
+                 on_destination_check=None):
         self.memory = memory
         self.lock = lock
         self.port = port
@@ -57,6 +59,10 @@ class ControlChannel(object):
         # Called with (frame_id, first_packet_id, last_packet_id). Wired to
         # the stream channel, which holds both the frame and the socket.
         self.on_packet_resend = on_packet_resend
+        # Called with the dotted address a client is trying to set as the
+        # stream destination; returns why it may not be used, or None. Wired
+        # to the stream channel, which owns that policy.
+        self.on_destination_check = on_destination_check
 
         # The bridge runs user code, so it is always called with the lock
         # released -- a slow camera must not be able to stall the stream
@@ -245,6 +251,32 @@ class ControlChannel(object):
         self._update_controller(address)
         return reply
 
+    def _check_destination(self, value):
+        """
+        Refuse a stream destination the device will not send to, at the write
+        that names it.
+
+        The stream channel checks this too, but by then there is nobody to
+        tell: acquisition starts, no frames appear, and the client waits out
+        its timeout with no idea why. A failed write is the one moment the
+        client is listening, and every client reports it.
+
+        The status is "invalid parameter" rather than "access denied"
+        because the client may write this register -- it is the value that
+        cannot be used, and a denial invites a client to go back and take
+        control again.
+        """
+        if self.on_destination_check is None:
+            return
+        ip = "%d.%d.%d.%d" % ((value >> 24) & 0xFF, (value >> 16) & 0xFF,
+                              (value >> 8) & 0xFF, value & 0xFF)
+        if value == 0:
+            # Clearing it is how a client closes the stream channel down.
+            return
+        refusal = self.on_destination_check(ip)
+        if refusal is not None:
+            raise MemoryError_(refusal, c.ERROR_INVALID_PARAMETER)
+
     def _dispatch(self, command, address, write_access):
         cmd = command.command
 
@@ -270,6 +302,9 @@ class ControlChannel(object):
             if not write_access:
                 raise MemoryError_(self._denied([a for a, _ in pairs]),
                                    c.ERROR_ACCESS_DENIED)
+            for addr, value in pairs:
+                if addr == c.BS_SC0_IP_ADDRESS:
+                    self._check_destination(value)
             with self.lock:
                 for addr, value in pairs:
                     self.memory.write_register(addr, value)
@@ -300,6 +335,13 @@ class ControlChannel(object):
             if not write_access:
                 raise MemoryError_(self._denied([addr]),
                                    c.ERROR_ACCESS_DENIED)
+            # A block write can land on the destination register too, and a
+            # check that only covered WRITEREG would be one memcpy from
+            # useless.
+            offset = c.BS_SC0_IP_ADDRESS - addr
+            if 0 <= offset and offset + 4 <= len(payload):
+                self._check_destination(
+                    struct.unpack(">I", payload[offset:offset + 4])[0])
             with self.lock:
                 self.memory.write(addr, payload)
             if self.bridge is not None:
