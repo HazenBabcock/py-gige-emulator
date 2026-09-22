@@ -9,6 +9,8 @@
 # Spinnaker SDK and the Python version -- not on PyPI, and not
 # interchangeable between versions.
 #
+# Run against a Blackfly S BFS-U3-19S4M, with Spinnaker 4.4.
+#
 # The reported MAC defaults to FLIR's OUI. That is load bearing: Spinnaker's
 # GigE transport layer -- which SpinView and Micro-Manager's Spinnaker
 # adapter both sit on -- enumerates a device only if its MAC begins with one

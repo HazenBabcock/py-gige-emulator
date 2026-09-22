@@ -6,7 +6,8 @@
 #                                    --pixel-format RGB8
 #
 # Works with UVC webcams on Linux, and with anything else cv2.VideoCapture
-# will open.
+# will open. Run against a laptop's integrated UVC webcam, which is the
+# cheapest hardware to check a change against -- most machines have one.
 #
 
 import argparse

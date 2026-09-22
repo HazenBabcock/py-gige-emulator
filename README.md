@@ -61,7 +61,11 @@ $ python examples/allied_vision_camera.py --interface eth0   # Alvium USB, via v
 $ python examples/flir_camera.py   --interface eth0     # FLIR Blackfly S, via PySpin
 ```
 
-then point any GigE Vision client at it. They all take `--interface` to pick
+then point any GigE Vision client at it. Each hardware example names the
+cameras it has actually been run against at the top of the file, which is
+worth reading before adapting one: models in the same family differ in ways
+that matter, and a colour camera of the same model number may not have the
+features its mono sibling does. They all take `--interface` to pick
 which network interface the camera appears on — naming one that does not exist
 prints the ones that do — and `--name` to set the camera's user-defined name:
 

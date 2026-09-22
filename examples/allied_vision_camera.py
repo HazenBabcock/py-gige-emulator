@@ -10,6 +10,11 @@
 # with "No TL detected" if that is unset, which is why the line above carries
 # it.
 #
+# Run against an Alvium 1800 U-1240c and an 1800 U-1240m. The mono one is
+# where the binning interlock showed up: it refuses a horizontal binning
+# below 2 while the vertical is above 1, and raises the horizontal itself
+# when the vertical goes up.
+#
 # The reported MAC defaults to Allied Vision's OUI. That is load bearing:
 # VimbaX's GigE transport layer -- which VimbaX Viewer and Micro-Manager's
 # Allied Vision adapter both sit on -- enumerates a device only if its MAC

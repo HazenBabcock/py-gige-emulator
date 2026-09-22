@@ -7,8 +7,7 @@
 #   python examples/pi_camera.py --interface eth0
 #
 # This one needs a Pi, so it cannot be exercised on a development machine the
-# way the OpenCV example can. It is run against an IMX477 on real hardware
-# instead; the frame handling came from a working Aravis-based bridge, and the
+# way the OpenCV example can. It is run against an IMX477 on a Pi 5 instead; the frame handling came from a working Aravis-based bridge, and the
 # settings hooks were written here.
 #
 # FULL RESOLUTION WANTS A PACKET DELAY. A 4056x3040 frame is 37 MB as RGB8 and

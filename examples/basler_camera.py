@@ -7,6 +7,12 @@
 # one network protocol wrapped in another: it puts a camera that has no
 # network interface of its own onto the network.
 #
+# Run against an acA1440-220um and an acA1440-220uc. Worth naming both,
+# because the difference between them is the kind of thing that breaks an
+# example: the mono model has binning and the colour one has none at all, in
+# any pixel format, so anything here that reads a feature without asking
+# whether the camera has it works on one and not the other.
+#
 # The reported MAC defaults to Basler's OUI, and that is load bearing rather
 # than cosmetic. pylon's GigE transport layer -- which pylon Viewer, the
 # pylon API and Micro-Manager's Basler adapter all sit on -- refuses to
