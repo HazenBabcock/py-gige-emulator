@@ -131,6 +131,17 @@ class AlliedVisionCamera(EmulatedCamera):
                 "--device-serial is needed: %s"
                 % ", ".join(c.get_serial() for c in cameras))
         self.cam = self._stack.enter_context(cameras[0])
+
+        # Not every camera has binning, and a model that lacks it still
+        # carries the feature -- unreadable. Settled here, before the reset
+        # below and everything after it: reading an absent feature raises,
+        # and the example would refuse to start on such a camera.
+        self.has_binning = (self._available("BinningHorizontal")
+                            and self._available("BinningVertical"))
+        if not self.has_binning:
+            log.info("this camera has no binning; serving it without "
+                     "BinningHorizontal or BinningVertical")
+
         if reset:
             self._reset_geometry()
 
@@ -172,31 +183,44 @@ class AlliedVisionCamera(EmulatedCamera):
         features = self.feature_set.by_name
         rate = features["AcquisitionFrameRate"]
         rate.p_max = "AcquisitionFrameRateMax"
-        rate.invalidated_by = ("ExposureTime", "Width", "Height",
-                               "BinningHorizontal", "BinningVertical",
-                               "PixelFormat")
+        rate.invalidated_by = self._moves_the_ceiling()
         self._refresh_frame_rate_ceiling()
 
         # Binning moves the geometry: the window is in binned pixels, so the
         # camera resizes it and the payload with it. A GenICam client caches
         # what it has read, so without these it goes on believing the width
         # it saw before and sizes its buffers from it.
-        binning = ("BinningHorizontal", "BinningVertical")
-        for name in ("Width", "Height", "OffsetX", "OffsetY", "PayloadSize"):
-            features[name].invalidated_by = (
-                tuple(features[name].invalidated_by) + binning)
+        if self.has_binning:
+            binning = ("BinningHorizontal", "BinningVertical")
+            for name in ("Width", "Height", "OffsetX", "OffsetY",
+                         "PayloadSize"):
+                features[name].invalidated_by = (
+                    tuple(features[name].invalidated_by) + binning)
 
         # And the axes move each other, one way: vertical binning above 1
         # forces horizontal to 2, which the camera does by itself. The
         # reverse does not happen, so only this direction is declared -- a
         # pair that invalidate each other is a cycle, and GenApi
         # implementations are not obliged to enjoy it.
-        features["BinningHorizontal"].invalidated_by = ("BinningVertical",)
+        if self.has_binning:
+            features["BinningHorizontal"].invalidated_by = ("BinningVertical",)
 
     # --- talking to vmbpy ------------------------------------------------
 
     def _feature(self, name):
         return self.cam.get_feature_by_name(name)
+
+    def _available(self, name):
+        """
+        Whether this camera implements a feature at all.
+
+        vmbpy answers for a feature the model does not have by carrying it
+        and refusing to read it, so this asks rather than reads.
+        """
+        try:
+            return self._feature(name).is_readable()
+        except vmbpy.VmbFeatureError:
+            return False
 
     def _value(self, name):
         value = self._feature(name).get()
@@ -236,8 +260,9 @@ class AlliedVisionCamera(EmulatedCamera):
         starts at a fraction of the sensor because an earlier experiment left
         it there looks exactly like a bug in here.
         """
-        for name in ("BinningHorizontal", "BinningVertical"):
-            self._feature(name).set(self._feature(name).get_range()[0])
+        if self.has_binning:
+            for name in ("BinningHorizontal", "BinningVertical"):
+                self._feature(name).set(self._feature(name).get_range()[0])
         self._feature("OffsetX").set(0)
         self._feature("OffsetY").set(0)
         self._feature("Width").set(self._feature("Width").get_range()[1])
@@ -283,12 +308,23 @@ class AlliedVisionCamera(EmulatedCamera):
                         self._feature("OffsetY").get_increment()),
         }
 
+    def _moves_the_ceiling(self):
+        """
+        Features a client can change that move the reachable frame rate.
+
+        An invalidator naming a feature this camera does not publish is
+        refused by the XML validator, so a camera without binning must not
+        be told that binning changes anything.
+        """
+        names = ["ExposureTime", "Width", "Height", "PixelFormat"]
+        if self.has_binning:
+            names += ["BinningHorizontal", "BinningVertical"]
+        return tuple(names)
+
     def _describe_features(self):
         exposure = self._feature("ExposureTime")
         low, high = exposure.get_range()
-        binning_h = self._feature("BinningHorizontal")
-        binning_v = self._feature("BinningVertical")
-        return (
+        features = [
             FloatFeature("ExposureTime", "Exposure time",
                          "AcquisitionControl", "RW",
                          default=exposure.get(), min=low, max=high,
@@ -302,21 +338,25 @@ class AlliedVisionCamera(EmulatedCamera):
             FloatFeature("AcquisitionFrameRateMax",
                          "Fastest frame rate the current settings sustain",
                          "AcquisitionControl", "RO",
-                         invalidated_by=("ExposureTime", "Width", "Height",
-                                         "BinningHorizontal",
-                                         "BinningVertical", "PixelFormat"),
+                         invalidated_by=self._moves_the_ceiling(),
                          default=0.0, min=0.0, max=1e6, unit="Hz"),
-            IntFeature("BinningHorizontal", "Horizontal binning factor",
-                       "ImageFormatControl", "RW", affects_payload=True,
-                       default=binning_h.get(),
-                       min=binning_h.get_range()[0],
-                       max=binning_h.get_range()[1]),
-            IntFeature("BinningVertical", "Vertical binning factor",
-                       "ImageFormatControl", "RW", affects_payload=True,
-                       default=binning_v.get(),
-                       min=binning_v.get_range()[0],
-                       max=binning_v.get_range()[1]),
-        )
+        ]
+        if self.has_binning:
+            binning_h = self._feature("BinningHorizontal")
+            binning_v = self._feature("BinningVertical")
+            features += [
+                IntFeature("BinningHorizontal", "Horizontal binning factor",
+                           "ImageFormatControl", "RW", affects_payload=True,
+                           default=binning_h.get(),
+                           min=binning_h.get_range()[0],
+                           max=binning_h.get_range()[1]),
+                IntFeature("BinningVertical", "Vertical binning factor",
+                           "ImageFormatControl", "RW", affects_payload=True,
+                           default=binning_v.get(),
+                           min=binning_v.get_range()[0],
+                           max=binning_v.get_range()[1]),
+            ]
+        return tuple(features)
 
     # --- lifecycle -------------------------------------------------------
 
@@ -452,11 +492,13 @@ class AlliedVisionCamera(EmulatedCamera):
             "Height": self._value("Height"),
             "OffsetX": self._value("OffsetX"),
             "OffsetY": self._value("OffsetY"),
-            "BinningHorizontal": self._value("BinningHorizontal"),
-            "BinningVertical": self._value("BinningVertical"),
             "AcquisitionFrameRateMax":
                 self.settings["AcquisitionFrameRateMax"],
         }
+        if self.has_binning:
+            self._cached["BinningHorizontal"] = \
+                self._value("BinningHorizontal")
+            self._cached["BinningVertical"] = self._value("BinningVertical")
         self._cached_at = now
         return self._cached
 

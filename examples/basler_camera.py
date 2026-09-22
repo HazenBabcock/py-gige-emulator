@@ -100,6 +100,18 @@ class BaslerCamera(EmulatedCamera):
     def __init__(self, serial=None, reset=False, **kwds):
         self.cam = open_camera(serial)
         self.cam.Open()
+
+        # Not every ace has binning. The colour acA1440-220uc does not, while
+        # the mono acA1440-220um this was written against does, and the node
+        # is in the map either way -- present but not available. Reading it
+        # raises, which is how the example used to refuse to start on that
+        # camera, so this is settled before anything else touches it.
+        self.has_binning = (self._available("BinningHorizontal")
+                            and self._available("BinningVertical"))
+        if not self.has_binning:
+            log.info("this camera has no binning; serving it without "
+                     "BinningHorizontal or BinningVertical")
+
         if reset:
             self._reset_geometry()
 
@@ -146,19 +158,19 @@ class BaslerCamera(EmulatedCamera):
         features = self.feature_set.by_name
         rate = features["AcquisitionFrameRate"]
         rate.p_max = "AcquisitionFrameRateMax"
-        rate.invalidated_by = ("ExposureTime", "Width", "Height",
-                               "BinningHorizontal", "BinningVertical",
-                               "PixelFormat")
+        rate.invalidated_by = self._moves_the_ceiling()
         self._refresh_frame_rate_ceiling()
 
         # Binning moves the geometry: the window is in binned pixels, so the
         # camera resizes it and the payload with it. A GenICam client caches
         # what it has read, so without these it goes on believing the width
         # it saw before and sizes its buffers from it.
-        binning = ("BinningHorizontal", "BinningVertical")
-        for name in ("Width", "Height", "OffsetX", "OffsetY", "PayloadSize"):
-            features[name].invalidated_by = (
-                tuple(features[name].invalidated_by) + binning)
+        if self.has_binning:
+            binning = ("BinningHorizontal", "BinningVertical")
+            for name in ("Width", "Height", "OffsetX", "OffsetY",
+                         "PayloadSize"):
+                features[name].invalidated_by = (
+                    tuple(features[name].invalidated_by) + binning)
 
     def _reset_geometry(self):
         """
@@ -170,14 +182,26 @@ class BaslerCamera(EmulatedCamera):
         starts 128 pixels wide because some earlier experiment left it that
         way looks exactly like a bug in here.
         """
-        self.cam.BinningHorizontal.Value = self.cam.BinningHorizontal.Min
-        self.cam.BinningVertical.Value = self.cam.BinningVertical.Min
+        if self.has_binning:
+            self.cam.BinningHorizontal.Value = self.cam.BinningHorizontal.Min
+            self.cam.BinningVertical.Value = self.cam.BinningVertical.Min
         self.cam.OffsetX.Value = 0
         self.cam.OffsetY.Value = 0
         self.cam.Width.Value = self.cam.Width.Max
         self.cam.Height.Value = self.cam.Height.Max
 
     # --- what this camera can do ----------------------------------------
+
+    def _available(self, name):
+        """
+        Whether this camera implements a feature at all.
+
+        A node absent from the model is still in the node map, so asking the
+        map is the only way that does not raise: reading the value of an
+        unavailable node throws AccessException.
+        """
+        node = self.cam.GetNodeMap().GetNode(name)
+        return node is not None and genicam.IsAvailable(node)
 
     def _pixel_formats(self):
         available = [name for name in self.cam.PixelFormat.Symbolics
@@ -213,7 +237,7 @@ class BaslerCamera(EmulatedCamera):
 
     def _describe_features(self):
         exposure = self.cam.ExposureTime
-        return (
+        features = [
             FloatFeature("ExposureTime", "Exposure time",
                          "AcquisitionControl", "RW",
                          default=exposure.Value, min=exposure.Min,
@@ -226,21 +250,36 @@ class BaslerCamera(EmulatedCamera):
             FloatFeature("AcquisitionFrameRateMax",
                          "Fastest frame rate the current settings sustain",
                          "AcquisitionControl", "RO",
-                         invalidated_by=("ExposureTime", "Width", "Height",
-                                         "BinningHorizontal",
-                                         "BinningVertical", "PixelFormat"),
+                         invalidated_by=self._moves_the_ceiling(),
                          default=0.0, min=0.0, max=1e6, unit="Hz"),
-            IntFeature("BinningHorizontal", "Horizontal binning factor",
-                       "ImageFormatControl", "RW", affects_payload=True,
-                       default=self.cam.BinningHorizontal.Value,
-                       min=self.cam.BinningHorizontal.Min,
-                       max=self.cam.BinningHorizontal.Max),
-            IntFeature("BinningVertical", "Vertical binning factor",
-                       "ImageFormatControl", "RW", affects_payload=True,
-                       default=self.cam.BinningVertical.Value,
-                       min=self.cam.BinningVertical.Min,
-                       max=self.cam.BinningVertical.Max),
-        )
+        ]
+        if self.has_binning:
+            features += [
+                IntFeature("BinningHorizontal", "Horizontal binning factor",
+                           "ImageFormatControl", "RW", affects_payload=True,
+                           default=self.cam.BinningHorizontal.Value,
+                           min=self.cam.BinningHorizontal.Min,
+                           max=self.cam.BinningHorizontal.Max),
+                IntFeature("BinningVertical", "Vertical binning factor",
+                           "ImageFormatControl", "RW", affects_payload=True,
+                           default=self.cam.BinningVertical.Value,
+                           min=self.cam.BinningVertical.Min,
+                           max=self.cam.BinningVertical.Max),
+            ]
+        return tuple(features)
+
+    def _moves_the_ceiling(self):
+        """
+        Features a client can change that move the reachable frame rate.
+
+        An invalidator naming a feature this camera does not publish is
+        refused by the XML validator, so a camera without binning must not
+        be told that binning changes anything.
+        """
+        names = ["ExposureTime", "Width", "Height", "PixelFormat"]
+        if self.has_binning:
+            names += ["BinningHorizontal", "BinningVertical"]
+        return tuple(names)
 
     # --- lifecycle -------------------------------------------------------
 
@@ -428,11 +467,13 @@ class BaslerCamera(EmulatedCamera):
             "Height": self.cam.Height.Value,
             "OffsetX": self.cam.OffsetX.Value,
             "OffsetY": self.cam.OffsetY.Value,
-            "BinningHorizontal": self.cam.BinningHorizontal.Value,
-            "BinningVertical": self.cam.BinningVertical.Value,
             "AcquisitionFrameRateMax":
                 self.settings["AcquisitionFrameRateMax"],
         }
+        if self.has_binning:
+            self._cached["BinningHorizontal"] = \
+                self.cam.BinningHorizontal.Value
+            self._cached["BinningVertical"] = self.cam.BinningVertical.Value
         self._cached_at = now
         return self._cached
 
